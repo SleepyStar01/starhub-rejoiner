@@ -658,6 +658,22 @@ function shell.sqlite(db_path, sql)
     )
 end
 
+--- Fetch game name from Roblox API using place ID
+---@param place_id string|number
+---@return string|nil game_name
+function shell.fetch_game_name(place_id)
+    if not place_id or tostring(place_id) == "" then return nil end
+    local url = "https://economy.roblox.com/v2/assets/" .. tostring(place_id) .. "/details"
+    local _, out = shell.exec("curl -s " .. shell.quote(url) .. " 2>/dev/null")
+    if out and out ~= "" then
+        local name = out:match('"Name"%s*:%s*"([^"]+)"')
+        if name then
+            return name
+        end
+    end
+    return nil
+end
+
 return shell
 
 end
