@@ -673,6 +673,27 @@ function shell.fetch_game_name(place_id)
     end
     return nil
 end
+--- Verify a Roblox cookie via API
+---@param cookie_string string
+---@return boolean is_valid
+---@return string username_or_error
+function shell.verify_cookie(cookie_string)
+    if not cookie_string or cookie_string == "" then return false, "No cookie provided" end
+    
+    local url = "https://users.roblox.com/v1/users/authenticated"
+    local header = 'Cookie: .ROBLOSECURITY=' .. cookie_string
+    local cmd = string.format("curl -s -H %s %s 2>/dev/null", shell.quote(header), shell.quote(url))
+    
+    local _, out = shell.exec(cmd)
+    if out and out:find('"name"') then
+        local name = out:match('"name"%s*:%s*"([^"]+)"')
+        if name then
+            return true, name
+        end
+    end
+    
+    return false, "Invalid or expired cookie"
+end
 
 return shell
 
@@ -1164,7 +1185,8 @@ config.DEFAULT = {
         max_rejoin_attempts = 5,    -- max consecutive rejoin attempts
         rejoin_cooldown = 30,       -- seconds between rejoin attempts
         auto_launch_on_start = true,-- launch non-running packages when monitor starts
-        launch_stagger_seconds = 8, -- delay between launching multiple packages
+        launch_stagger_seconds = 60, -- delay between launching multiple packages
+        periodic_rejoin_minutes = 20,-- automatic restart interval
     },
 
     -- Cookie settings
@@ -2118,14 +2140,25 @@ function cookie.injection_menu(cfg_data, packages)
     end
 
     local target_pkg = packages[idx]
+    
+    local existing = config.get_cookie(cfg_data, target_pkg)
+    local masked_display = config.get(cfg_data, "cookie.masked_display", true)
+    
     print("")
     ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
+    if existing then
+        local disp = masked_display and cookie.mask(existing) or existing
+        ui.kv("Current Cookie", disp)
+    else
+        ui.kv("Current Cookie", ui.c("No cookie stored", ui.color.gray))
+    end
+    print("")
 
     -- Ask for action
     local action = ui.menu({
-        { key = "1", label = "Inject new cookie" },
-        { key = "2", label = "View current cookie" },
-        { key = "3", label = "Remove cookie" },
+        { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
+        { key = "2", label = "Verify current cookie (Roblox API)" },
+        { key = "3", label = "Remove cookie", color = ui.color.red },
         { key = "0", label = "Back", color = ui.color.gray },
     }, "Select action")
 
@@ -2142,15 +2175,24 @@ function cookie.injection_menu(cfg_data, packages)
         if not cookie_input or cookie_input == "" then
             ui.warn("No cookie provided")
         else
+            ui.info("Verifying cookie before injection...")
+            local valid, name_or_err = shell.verify_cookie(cookie.clean(cookie_input))
+            if valid then
+                ui.success("Cookie is valid! Account: " .. ui.c(name_or_err, ui.color.green))
+            else
+                ui.warn("Cookie verification failed: " .. name_or_err)
+                if not ui.confirm("Do you still want to inject this cookie?", false) then
+                    return cfg_data
+                end
+            end
+            
             local ok, inject_err = cookie.inject(target_pkg, cookie_input)
             if ok then
-                -- Save to config
                 config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
                 config.save(cfg_data)
                 ui.success("Cookie saved to config and injected!")
             else
                 ui.error("Injection failed: " .. tostring(inject_err))
-                -- Still save to config for later use
                 if ui.confirm("Save cookie to config anyway?", true) then
                     config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
                     config.save(cfg_data)
@@ -2160,20 +2202,21 @@ function cookie.injection_menu(cfg_data, packages)
         end
 
     elseif action == "2" then
-        -- View current cookie
-        local existing = config.get_cookie(cfg_data, target_pkg)
-        if existing then
-            print("")
-            ui.info("Cookie for " .. target_pkg .. ":")
-            ui.kv("Masked", cookie.mask(existing))
-            ui.kv("Length", tostring(#existing) .. " chars")
+        if not existing then
+            ui.warn("No cookie stored to verify!")
         else
-            ui.warn("No cookie stored for " .. target_pkg)
+            ui.info("Verifying current cookie...")
+            local valid, name_or_err = shell.verify_cookie(existing)
+            if valid then
+                ui.success("Cookie is VALID!")
+                ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
+            else
+                ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
+            end
         end
 
     elseif action == "3" then
-        -- Remove cookie
-        if ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
+        if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
             config.set_cookie(cfg_data, target_pkg, nil)
             config.save(cfg_data)
             ui.success("Cookie removed")
@@ -2199,6 +2242,7 @@ _MODULES["grid"] = function()
 
 local shell = require("shell")
 local ui = require("ui")
+local config = require("config")
 
 local grid = {}
 
@@ -2206,21 +2250,32 @@ local grid = {}
 ---@return number|nil width
 ---@return number|nil height
 function grid.get_screen_size()
-    local _, out = shell.exec("wm size 2>/dev/null")
+    local _, out = shell.su("wm size 2>/dev/null")
     if out then
         local w, h = out:match("(%d+)x(%d+)")
         if w and h then
             return tonumber(w), tonumber(h)
         end
     end
+    
+    -- Fallback
+    local _, d_out = shell.su("dumpsys window displays 2>/dev/null")
+    if d_out then
+        local w, h = d_out:match("cur=(%d+)x(%d+)")
+        if w and h then
+            return tonumber(w), tonumber(h)
+        end
+    end
+    
     return nil, nil
 end
 
 --- Apply grid layout to a list of packages
+---@param cfg_data table
 ---@param packages table List of package names
 ---@param rows number
 ---@param cols number
-function grid.apply(packages, rows, cols)
+function grid.apply(cfg_data, packages, rows, cols)
     if #packages == 0 then
         ui.error("No packages to arrange")
         return
@@ -2241,57 +2296,93 @@ function grid.apply(packages, rows, cols)
 
     ui.info(string.format("Screen: %dx%d | Cell: %dx%d", w, h, cell_w, cell_h))
 
+    -- Force stop all target packages first
+    ui.info("Stopping selected packages before arranging...")
+    for _, pkg in ipairs(packages) do
+        shell.am_force_stop(pkg)
+    end
+    shell.sleep(1)
+
+    local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 60))
+
     for i, pkg in ipairs(packages) do
-        -- 0-indexed for math
-        local idx = i - 1 
-        local r = math.floor(idx / cols)
-        local c = idx % cols
-
-        if r >= rows then
-            ui.warn(pkg .. " exceeds grid size, skipping...")
+        local uri = config.get_launch_uri(cfg_data, pkg)
+        if not uri then
+            ui.warn("No Server Target / URI configured for " .. pkg)
         else
-            local left = c * cell_w
-            local top = r * cell_h
-            local right = left + cell_w
-            local bottom = top + cell_h
+            -- 0-indexed for math
+            local idx = i - 1 
+            local r = math.floor(idx / cols)
+            local c = idx % cols
 
-            -- Launch activity in freeform mode with bounds
-            ui.log(string.format("Positioning %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-            local intent = "com.roblox.client/com.roblox.client.Activity"
-            local cmd = string.format("am start -n %s --windowingMode 5 --bounds %d,%d,%d,%d",
-                                      shell.quote(pkg .. "/com.roblox.client.Activity"), left, top, right, bottom)
-            shell.su(cmd)
-            shell.sleep(0.5)
+            if r >= rows then
+                ui.warn(pkg .. " exceeds grid size, skipping...")
+            else
+                local left = c * cell_w
+                local top = r * cell_h
+                local right = left + cell_w
+                local bottom = top + cell_h
+
+                -- Launch activity in freeform mode with bounds
+                ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
+                local cmd = string.format("am start -n %s --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
+                                          shell.quote(pkg .. "/com.roblox.client.Activity"), 
+                                          left, top, right, bottom, shell.quote(uri))
+                shell.su(cmd)
+                
+                if i < #packages and stagger > 0 then
+                    ui.info("Waiting " .. stagger .. "s before next launch...")
+                    shell.sleep(stagger)
+                end
+            end
         end
     end
     ui.success("Grid applied successfully!")
 end
 
 --- Interactive menu for Auto Grid
+---@param cfg_data table
 ---@param packages table
-function grid.menu(packages)
+function grid.menu(cfg_data, packages)
     ui.header("Auto Grid Layout")
     
-    local active_packages = {}
-    for _, pkg in ipairs(packages) do
-        if shell.is_running(pkg) then
-            table.insert(active_packages, pkg)
-        end
-    end
-
-    if #active_packages == 0 then
-        ui.error("No running Roblox packages found!")
-        ui.info("Please launch packages first before using Auto Grid.")
+    if #packages == 0 then
+        ui.error("No Roblox packages found on device!")
         shell.sleep(2)
         return
     end
 
-    ui.info("Found " .. #active_packages .. " running package(s).")
+    local target_choice = ui.menu({
+        { key = "1", label = "All Monitored Packages (" .. #packages .. ")" },
+        { key = "2", label = "Select Specific Package" },
+        { key = "0", label = "Cancel", color = ui.color.gray },
+    }, "Target Package for Grid")
+    
+    local target_packages = {}
+    if target_choice == "1" then
+        target_packages = packages
+    elseif target_choice == "2" then
+        local options = {}
+        for i, p in ipairs(packages) do
+            table.insert(options, { key = tostring(i), label = p })
+        end
+        table.insert(options, { key = "0", label = "Cancel", color = ui.color.gray })
+        local sel = ui.menu(options, "Select Package")
+        local sel_num = tonumber(sel)
+        if sel_num and sel_num > 0 and sel_num <= #packages then
+            target_packages = { packages[sel_num] }
+        else
+            return
+        end
+    else
+        return
+    end
+
     local rows = ui.input_number("Enter number of rows", 2, 1, 10)
     local cols = ui.input_number("Enter number of columns", 2, 1, 10)
 
     if rows and cols then
-        grid.apply(active_packages, rows, cols)
+        grid.apply(cfg_data, target_packages, rows, cols)
         shell.sleep(2)
     end
 end
@@ -3303,8 +3394,6 @@ local function config_menu(cfg_data)
 
         -- Show current config summary
         ui.subheader("Current Settings")
-        ui.kv("Language", config.get(cfg_data, "language", "id"))
-        ui.kv("Package Mode", config.get(cfg_data, "packages.mode", "auto"))
         ui.kv("Package Prefix", config.get(cfg_data, "packages.prefix", "com.roblox"))
         ui.kv("Server Type", config.get(cfg_data, "server.type", "ps_link"))
 
@@ -3376,7 +3465,7 @@ local function config_menu(cfg_data)
 
         elseif choice == "4" then
             local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "com.roblox"))
-            grid.menu(packages)
+            grid.menu(cfg_data, packages)
 
         elseif choice == "5" then
             ui.header("Raw Configuration")
