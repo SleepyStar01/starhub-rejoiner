@@ -2175,6 +2175,116 @@ return cookie
 end
 
 -- ============================================================
+-- MODULE: grid
+-- ============================================================
+_MODULES["grid"] = function()
+-- StarhubRejoiner: Auto Grid Module
+-- Handles resizing and organizing Roblox packages in a grid
+
+local shell = require("shell")
+local ui = require("ui")
+
+local grid = {}
+
+--- Parse 'wm size' output
+---@return number|nil width
+---@return number|nil height
+function grid.get_screen_size()
+    local _, out = shell.exec("wm size 2>/dev/null")
+    if out then
+        local w, h = out:match("(%d+)x(%d+)")
+        if w and h then
+            return tonumber(w), tonumber(h)
+        end
+    end
+    return nil, nil
+end
+
+--- Apply grid layout to a list of packages
+---@param packages table List of package names
+---@param rows number
+---@param cols number
+function grid.apply(packages, rows, cols)
+    if #packages == 0 then
+        ui.error("No packages to arrange")
+        return
+    end
+
+    -- Enable freeform support for Android 10+
+    shell.su("settings put global enable_freeform_support 1")
+    shell.su("settings put global force_resizable_activities 1")
+
+    local w, h = grid.get_screen_size()
+    if not w or not h then
+        ui.error("Could not determine screen resolution")
+        return
+    end
+
+    local cell_w = math.floor(w / cols)
+    local cell_h = math.floor(h / rows)
+
+    ui.info(string.format("Screen: %dx%d | Cell: %dx%d", w, h, cell_w, cell_h))
+
+    for i, pkg in ipairs(packages) do
+        -- 0-indexed for math
+        local idx = i - 1 
+        local r = math.floor(idx / cols)
+        local c = idx % cols
+
+        if r >= rows then
+            ui.warn(pkg .. " exceeds grid size, skipping...")
+        else
+            local left = c * cell_w
+            local top = r * cell_h
+            local right = left + cell_w
+            local bottom = top + cell_h
+
+            -- Launch activity in freeform mode with bounds
+            ui.log(string.format("Positioning %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
+            local intent = "com.roblox.client/com.roblox.client.Activity"
+            local cmd = string.format("am start -n %s --windowingMode 5 --bounds %d,%d,%d,%d",
+                                      shell.quote(pkg .. "/com.roblox.client.Activity"), left, top, right, bottom)
+            shell.su(cmd)
+            shell.sleep(0.5)
+        end
+    end
+    ui.success("Grid applied successfully!")
+end
+
+--- Interactive menu for Auto Grid
+---@param packages table
+function grid.menu(packages)
+    ui.header("Auto Grid Layout")
+    
+    local active_packages = {}
+    for _, pkg in ipairs(packages) do
+        if shell.is_running(pkg) then
+            table.insert(active_packages, pkg)
+        end
+    end
+
+    if #active_packages == 0 then
+        ui.error("No running Roblox packages found!")
+        ui.info("Please launch packages first before using Auto Grid.")
+        shell.sleep(2)
+        return
+    end
+
+    ui.info("Found " .. #active_packages .. " running package(s).")
+    local rows = ui.input_number("Enter number of rows", 2, 1, 10)
+    local cols = ui.input_number("Enter number of columns", 2, 1, 10)
+
+    if rows and cols then
+        grid.apply(active_packages, rows, cols)
+        shell.sleep(2)
+    end
+end
+
+return grid
+
+end
+
+-- ============================================================
 -- MODULE: monitor
 -- ============================================================
 _MODULES["monitor"] = function()
@@ -2325,6 +2435,10 @@ local function perform_rejoin(pkg_name, cfg_data, state)
     end
 
     ui.log("  Launching...", ui.color.gray)
+    -- Apply launch stagger here
+    local stagger = tonumber(cfg_data.monitor and cfg_data.monitor.launch_stagger_seconds or 8)
+    if stagger > 0 then shell.sleep(stagger) end
+
     local code, output = shell.am_start(pkg_name, uri)
     if code ~= 0 then
         ui.log("  " .. ui.c("Launch failed: " .. tostring(output), ui.color.red))
@@ -2336,10 +2450,8 @@ local function perform_rejoin(pkg_name, cfg_data, state)
     local grace = mon_cfg.startup_grace_seconds or 45
     pkg_state.grace_until = os.time() + grace
     pkg_state.state = "launching"
-    pkg_state.last_rejoin = os.time()
-
-    ui.log("  " .. ui.c("Launched! Grace period: " .. grace .. "s", ui.color.green))
-
+    pkg_state.last_launch = os.time()
+    
     return true, nil
 end
 
@@ -2464,11 +2576,15 @@ function monitor.start(cfg_data, packages)
                     shell.am_start(pkg, uri)
                     state.packages[pkg].state = "launching"
                     state.packages[pkg].grace_until = os.time() + (mon_cfg.startup_grace_seconds or 45)
+                    state.packages[pkg].last_launch = os.time()
                     launched = launched + 1
                 end
             else
                 state.packages[pkg].state = "running"
                 state.packages[pkg].pid = shell.get_pid(pkg)
+                if not state.packages[pkg].last_launch then
+                    state.packages[pkg].last_launch = os.time()
+                end
             end
         end
 
@@ -2537,6 +2653,20 @@ function monitor.start(cfg_data, packages)
                             perform_rejoin(pkg, cfg_data, state)
                         else
                             pkg_state.state = "disconnected"
+                        end
+                    end
+
+                    -- Check for periodic rejoin
+                    local periodic_mins = tonumber(cfg_data.monitor and cfg_data.monitor.periodic_rejoin_minutes or 0)
+                    if periodic_mins > 0 and pkg_state.state == "running" and pkg_state.last_launch then
+                        local elapsed_mins = (now - pkg_state.last_launch) / 60
+                        if elapsed_mins >= periodic_mins then
+                            ui.log(ui.c(pkg, ui.color.cyan) .. " " ..
+                                   ui.c(string.format("periodic rejoin (%d min elapsed)", periodic_mins), ui.color.yellow))
+                            
+                            if not state.paused then
+                                perform_rejoin(pkg, cfg_data, state)
+                            end
                         end
                     end
 
@@ -2652,6 +2782,9 @@ function monitor.menu(cfg_data, packages)
     -- Show current config
     ui.subheader("Current Configuration")
     ui.kv("Server Type", server.type or "not set")
+    if server.game_name and server.game_name ~= "" then
+        ui.kv("Game Name", ui.c(server.game_name, ui.color.green))
+    end
     if server.type == "ps_link" then
         ui.kv("PS Link", server.ps_link ~= "" and server.ps_link or ui.c("NOT SET", ui.color.red))
     elseif server.type == "place_id" then
@@ -2682,8 +2815,35 @@ function monitor.menu(cfg_data, packages)
             shell.sleep(2)
             return cfg_data
         end
+        
+        -- Package Target Selection
+        local target_choice = ui.menu({
+            { key = "1", label = "All Monitored Packages (" .. #packages .. ")" },
+            { key = "2", label = "Select Specific Package" },
+            { key = "0", label = "Cancel", color = ui.color.gray },
+        }, "Target Package")
+        
+        local target_packages = {}
+        if target_choice == "1" then
+            target_packages = packages
+        elseif target_choice == "2" then
+            local options = {}
+            for i, p in ipairs(packages) do
+                table.insert(options, { key = tostring(i), label = p })
+            end
+            table.insert(options, { key = "0", label = "Cancel", color = ui.color.gray })
+            local sel = ui.menu(options, "Select Package")
+            local sel_num = tonumber(sel)
+            if sel_num and sel_num > 0 and sel_num <= #packages then
+                target_packages = { packages[sel_num] }
+            else
+                return cfg_data
+            end
+        else
+            return cfg_data
+        end
+
         -- Start monitoring
-        local target_packages = config.get_target_packages(cfg_data, packages)
         print("")
         ui.info("Starting monitor for " .. #target_packages .. " package(s)...")
         shell.sleep(1)
@@ -2712,11 +2872,26 @@ function monitor.configure_server(cfg_data)
         { key = "0", label = "Back", color = ui.color.gray },
     }, "Select server type")
 
+    local function detect_and_save_name(place_id)
+        if place_id and place_id ~= "" then
+            ui.info("Detecting game name...")
+            local name = shell.fetch_game_name(place_id)
+            if name then
+                config.set(cfg_data, "server.game_name", name)
+                ui.success("Detected Game: " .. name)
+            else
+                config.set(cfg_data, "server.game_name", "")
+            end
+        end
+    end
+
     if choice == "1" then
         config.set(cfg_data, "server.type", "ps_link")
         local link = ui.input("Enter PS Link URL")
         if link and link ~= "" then
             config.set(cfg_data, "server.ps_link", link)
+            local place_id = link:match("games/(%d+)/")
+            detect_and_save_name(place_id)
             config.save(cfg_data)
             ui.success("PS Link saved!")
         end
@@ -2726,6 +2901,7 @@ function monitor.configure_server(cfg_data)
         local pid = ui.input("Enter Place ID")
         if pid and pid ~= "" then
             config.set(cfg_data, "server.place_id", pid)
+            detect_and_save_name(pid)
             config.save(cfg_data)
             ui.success("Place ID saved!")
         end
@@ -2736,6 +2912,7 @@ function monitor.configure_server(cfg_data)
         local jid = ui.input("Enter Job ID (Game Instance ID)")
         if pid and pid ~= "" then
             config.set(cfg_data, "server.place_id", pid)
+            detect_and_save_name(pid)
         end
         if jid and jid ~= "" then
             config.set(cfg_data, "server.job_id", jid)
@@ -2758,8 +2935,11 @@ function monitor.configure_monitor(cfg_data)
     local interval = ui.input_number("Check interval (seconds)", mon.check_interval or 10, 3, 120)
     config.set(cfg_data, "monitor.check_interval", interval)
 
-    local grace = ui.input_number("Startup grace period (seconds)", mon.startup_grace_seconds or 45, 10, 120)
-    config.set(cfg_data, "monitor.startup_grace_seconds", grace)
+    local periodic = ui.input_number("Periodic Rejoin Interval (minutes, 0 to disable)", mon.periodic_rejoin_minutes or 0, 0, 1440)
+    config.set(cfg_data, "monitor.periodic_rejoin_minutes", periodic)
+
+    local stagger = ui.input_number("Package Join Delay (seconds)", mon.launch_stagger_seconds or 8, 0, 60)
+    config.set(cfg_data, "monitor.launch_stagger_seconds", stagger)
 
     local max_rejoin = ui.input_number("Max rejoin attempts", mon.max_rejoin_attempts or 5, 1, 50)
     config.set(cfg_data, "monitor.max_rejoin_attempts", max_rejoin)
@@ -3030,6 +3210,7 @@ local config  = require("config")
 local device  = require("device")
 local monitor = require("monitor")
 local cookie  = require("cookie")
+local grid    = require("grid")
 local api     = require("api")
 
 -- ============================================================
@@ -3112,6 +3293,11 @@ local function config_menu(cfg_data)
         ui.kv("Server Type", config.get(cfg_data, "server.type", "ps_link"))
 
         local server_type = config.get(cfg_data, "server.type", "ps_link")
+        local game_name = config.get(cfg_data, "server.game_name", "")
+        if game_name ~= "" then
+            ui.kv("Game Name", ui.c(game_name, ui.color.green))
+        end
+
         if server_type == "ps_link" then
             local link = config.get(cfg_data, "server.ps_link", "")
             ui.kv("PS Link", link ~= "" and link or ui.c("NOT SET", ui.color.red))
@@ -3123,17 +3309,16 @@ local function config_menu(cfg_data)
         end
 
         ui.kv("Check Interval", tostring(config.get(cfg_data, "monitor.check_interval", 10)) .. "s")
-        ui.kv("Discord Webhook", config.get(cfg_data, "notifications.discord_webhook", "") ~= "" and "Set" or "Not set")
-        ui.kv("UI Mode", config.get(cfg_data, "display.ui_mode", "live"))
+        ui.kv("Periodic Rejoin", tostring(config.get(cfg_data, "monitor.periodic_rejoin_minutes", 0)) .. " min")
+        ui.kv("Join Delay", tostring(config.get(cfg_data, "monitor.launch_stagger_seconds", 8)) .. "s")
 
         local choice = ui.menu({
             { key = "1", label = "Server Target (PS Link / Place ID / Job ID)" },
             { key = "2", label = "Monitor Settings" },
             { key = "3", label = "Package Settings" },
-            { key = "4", label = "Display Settings" },
-            { key = "5", label = "Discord Webhook" },
-            { key = "6", label = "View Raw Config" },
-            { key = "7", label = "Reset to Defaults", color = ui.color.red },
+            { key = "4", label = "Auto Grid Layout" },
+            { key = "5", label = "View Raw Config" },
+            { key = "6", label = "Reset to Defaults", color = ui.color.red },
             { separator = true },
             { key = "0", label = "Back", color = ui.color.gray },
         })
@@ -3174,65 +3359,19 @@ local function config_menu(cfg_data)
             shell.sleep(1)
 
         elseif choice == "4" then
-            -- Display settings
-            ui.header("Display Settings")
-            local ui_mode = ui.menu({
-                { key = "1", label = "Live (full dashboard, clears screen)" },
-                { key = "2", label = "Compact (single-line status, no clear)" },
-            }, "UI mode")
-            if ui_mode == "1" then
-                config.set(cfg_data, "display.ui_mode", "live")
-            elseif ui_mode == "2" then
-                config.set(cfg_data, "display.ui_mode", "compact")
-            end
-
-            local show_sys = ui.confirm("Show system info (CPU/RAM)?",
-                config.get(cfg_data, "display.show_system_info", true))
-            config.set(cfg_data, "display.show_system_info", show_sys)
-
-            local mask = ui.confirm("Mask usernames in status?",
-                config.get(cfg_data, "display.mask_usernames", false))
-            config.set(cfg_data, "display.mask_usernames", mask)
-
-            config.save(cfg_data)
-            ui.success("Display settings saved!")
-            shell.sleep(1)
+            local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "com.roblox"))
+            grid.menu(packages)
 
         elseif choice == "5" then
-            -- Discord webhook
-            ui.header("Discord Webhook")
-            local current = config.get(cfg_data, "notifications.discord_webhook", "")
-            if current ~= "" then
-                ui.info("Current webhook: " .. current:sub(1, 40) .. "...")
-            end
-            local webhook = ui.input("Discord Webhook URL (empty to clear)", current)
-            config.set(cfg_data, "notifications.discord_webhook", webhook)
-            config.save(cfg_data)
-            ui.success("Webhook settings saved!")
-            shell.sleep(1)
-
-        elseif choice == "6" then
-            -- View raw config
-            ui.header("Raw Config")
-            print(json.encode(cfg_data, true))
-            print("")
+            ui.header("Raw Configuration")
+            local raw = json.encode(cfg_data)
+            print(raw)
             ui.info("Press Enter to continue...")
             io.read("*l")
 
-        elseif choice == "7" then
-            -- Reset to defaults
+        elseif choice == "6" then
             if ui.confirm("Reset ALL settings to defaults? This cannot be undone!", false) then
-                cfg_data = config.load() -- Will get defaults
-                -- Actually overwrite with a fresh copy
-                local fresh = {}
-                for k, v in pairs(config.DEFAULT) do
-                    if type(v) == "table" then
-                        fresh[k] = json.decode(json.encode(v))
-                    else
-                        fresh[k] = v
-                    end
-                end
-                cfg_data = fresh
+                cfg_data = config.DEFAULT
                 config.save(cfg_data)
                 ui.success("Config reset to defaults!")
                 shell.sleep(1)
