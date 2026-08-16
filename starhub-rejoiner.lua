@@ -552,37 +552,39 @@ function shell.list_packages(pattern)
     return packages
 end
 
---- Get device CPU usage percentage
+--- Get device CPU usage percentage by measuring delta
 ---@return string cpu_info
 function shell.get_cpu_usage()
-    local _, output = shell.exec(
-        "top -bn1 2>/dev/null | head -5 | grep -i cpu || " ..
-        "cat /proc/stat 2>/dev/null | head -1"
-    )
-    -- Try to parse percentage from top output
-    local cpu = tonumber(output:match("(%d+%.?%d*)%%"))
-    if cpu then
-        if cpu > 100 then
-            local cores = tonumber(shell.trim(shell.exec("nproc 2>/dev/null") or "1")) or 1
-            if cores > 0 then cpu = cpu / cores end
-            if cpu > 100 then cpu = 100 end
+    local function read_stat()
+        local _, out = shell.exec("cat /proc/stat 2>/dev/null | head -1")
+        local fields = {}
+        for v in (out or ""):gmatch("%d+") do
+            fields[#fields + 1] = tonumber(v)
         end
-        return string.format("%.1f%%", cpu)
-    end
-    -- Fallback: parse /proc/stat
-    local fields = {}
-    for v in (output or ""):gmatch("%d+") do
-        fields[#fields + 1] = tonumber(v)
-    end
-    if #fields >= 4 then
-        local total = 0
-        for _, v in ipairs(fields) do total = total + v end
-        local idle = fields[4]
-        if total > 0 then
-            return string.format("%.1f%%", (1 - idle / total) * 100)
+        if #fields >= 4 then
+            local total = 0
+            for _, v in ipairs(fields) do total = total + v end
+            return total, fields[4] -- total, idle
         end
+        return nil, nil
     end
-    return "N/A"
+
+    local t1, i1 = read_stat()
+    if not t1 then return "N/A" end
+
+    shell.sleep(0.3) -- wait a bit to get a delta
+
+    local t2, i2 = read_stat()
+    if not t2 or t2 == t1 then return "N/A" end
+
+    local total_diff = t2 - t1
+    local idle_diff = i2 - i1
+    
+    local usage = (1 - (idle_diff / total_diff)) * 100
+    if usage < 0 then usage = 0 end
+    if usage > 100 then usage = 100 end
+
+    return string.format("%.1f%%", usage)
 end
 
 --- Get device memory info
