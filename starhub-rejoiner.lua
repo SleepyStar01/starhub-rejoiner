@@ -1943,6 +1943,21 @@ function cookie.find_db(package_name)
     return nil, "none"
 end
 
+--- Extract cookie directly from Roblox WebView SQLite database
+---@param package_name string
+---@return string|nil cookie_value
+function cookie.extract(package_name)
+    local db_path, db_type = cookie.find_db(package_name)
+    if db_type == "sqlite" and db_path then
+        local sql = string.format("SELECT value FROM %s WHERE name='%s' LIMIT 1;", COOKIE_DB_INFO.table_name, COOKIE_DB_INFO.name)
+        local code, output = shell.sqlite(db_path, sql)
+        if code == 0 and output and output ~= "" then
+            return shell.trim(output)
+        end
+    end
+    return nil
+end
+
 --- Inject a cookie into a Roblox package's data
 ---@param package_name string
 ---@param cookie_value string The .ROBLOSECURITY value
@@ -2142,6 +2157,15 @@ function cookie.injection_menu(cfg_data, packages)
     local target_pkg = packages[idx]
     
     local existing = config.get_cookie(cfg_data, target_pkg)
+    if not existing then
+        existing = cookie.extract(target_pkg)
+        if existing then
+            -- Save extracted cookie to config
+            config.set_cookie(cfg_data, target_pkg, existing)
+            config.save(cfg_data)
+        end
+    end
+    
     local masked_display = config.get(cfg_data, "cookie.masked_display", true)
     
     print("")
@@ -2325,7 +2349,7 @@ function grid.apply(cfg_data, packages, rows, cols)
 
                 -- Launch activity in freeform mode with bounds
                 ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-                local cmd = string.format("am start -n %s --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
+                local cmd = string.format("am start -n %s -a android.intent.action.VIEW --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
                                           shell.quote(pkg .. "/com.roblox.client.Activity"), 
                                           left, top, right, bottom, shell.quote(uri))
                 shell.su(cmd)
