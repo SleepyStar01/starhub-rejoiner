@@ -2150,6 +2150,13 @@ function cookie.injection_menu(cfg_data, packages)
     local menu_items = {}
     for i, pkg in ipairs(packages) do
         local existing = config.get_cookie(cfg_data, pkg)
+        if not existing then
+            existing = cookie.extract(pkg)
+            if existing then
+                config.set_cookie(cfg_data, pkg, existing)
+                config.save(cfg_data)
+            end
+        end
         local status = existing and (ui.c("has cookie", ui.color.green)) or (ui.c("no cookie", ui.color.gray))
         menu_items[#menu_items + 1] = {
             key = tostring(i),
