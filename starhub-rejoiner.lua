@@ -2207,7 +2207,7 @@ function cookie.injection_menu(cfg_data, packages)
     -- Ask for action
     local action = ui.menu({
         { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
-        { key = "2", label = "Verify current cookie (Roblox API)" },
+        { key = "2", label = "Verify a cookie manually (Roblox API)" },
         { key = "3", label = "Remove cookie", color = ui.color.red },
         { key = "0", label = "Back", color = ui.color.gray },
     }, "Select action")
@@ -2252,17 +2252,23 @@ function cookie.injection_menu(cfg_data, packages)
         end
 
     elseif action == "2" then
-        if not existing then
-            ui.warn("No cookie stored to verify!")
-        else
-            ui.info("Verifying current cookie...")
-            local valid, name_or_err = shell.verify_cookie(existing)
+        print("")
+        ui.info("Paste the cookie you want to verify:")
+        io.write(ui.color.cyan .. "> " .. ui.color.reset)
+        io.flush()
+        local test_cookie = io.read("*l")
+        
+        if test_cookie and test_cookie ~= "" then
+            ui.info("Verifying cookie with Roblox API...")
+            local valid, name_or_err = shell.verify_cookie(cookie.clean(test_cookie))
             if valid then
                 ui.success("Cookie is VALID!")
                 ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
             else
                 ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
             end
+        else
+            ui.warn("No cookie provided")
         end
 
     elseif action == "3" then
