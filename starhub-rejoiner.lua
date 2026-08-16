@@ -654,7 +654,7 @@ end
 ---@return string output
 function shell.sqlite(db_path, sql)
     return shell.su(
-        "sqlite3 " .. shell.quote(db_path) .. " " .. shell.quote(sql) .. " 2>/dev/null"
+        "sqlite3 " .. shell.quote(db_path) .. " " .. shell.quote(sql) .. " 2>&1"
     )
 end
 
@@ -2060,8 +2060,10 @@ function cookie.inject_direct(package_name, cookie_value)
     -- Create the WebView directory structure
     local webview_dir = "/data/data/" .. package_name .. "/app_webview/Default"
     local db_path = webview_dir .. "/Cookies"
+    local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
 
     shell.su("mkdir -p " .. shell.quote(webview_dir))
+    shell.su("rm -f " .. shell.quote(temp_db))
 
     local info = COOKIE_DB_INFO
     local expires = tostring(os.time() + 365 * 24 * 3600)
@@ -2086,9 +2088,9 @@ function cookie.inject_direct(package_name, cookie_value)
         );
     ]]
 
-    local code, output = shell.sqlite(db_path, create_sql)
+    local code, output = shell.sqlite(temp_db, create_sql)
     if code ~= 0 then
-        return false, "Failed to create cookie database: " .. tostring(output)
+        return false, "Failed to create cookie database in tmp: " .. tostring(output)
     end
 
     -- Insert the cookie
@@ -2098,10 +2100,14 @@ function cookie.inject_direct(package_name, cookie_value)
         expires, info.domain, info.name, cookie_value, info.path, expires, expires
     )
 
-    code, output = shell.sqlite(db_path, insert_sql)
+    code, output = shell.sqlite(temp_db, insert_sql)
     if code ~= 0 then
-        return false, "Failed to insert cookie: " .. tostring(output)
+        return false, "Failed to insert cookie into tmp: " .. tostring(output)
     end
+
+    -- Move to final destination
+    shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(db_path))
+    shell.su("rm -f " .. shell.quote(temp_db))
 
     -- Fix permissions
     cookie.fix_permissions(package_name, db_path)
