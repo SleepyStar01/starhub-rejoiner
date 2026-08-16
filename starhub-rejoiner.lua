@@ -3491,8 +3491,10 @@ local function config_menu(cfg_data)
             { key = "2", label = "Monitor Settings" },
             { key = "3", label = "Package Settings" },
             { key = "4", label = "Auto Grid Layout" },
-            { key = "5", label = "View Raw Config" },
-            { key = "6", label = "Reset to Defaults", color = ui.color.red },
+            { key = "5", label = "Optimization (FPS & Graphics)" },
+            { key = "6", label = "Autoexecute Manager (Delta)" },
+            { key = "7", label = "View Raw Config" },
+            { key = "8", label = "Reset to Defaults", color = ui.color.red },
             { separator = true },
             { key = "0", label = "Back", color = ui.color.gray },
         })
@@ -3504,7 +3506,6 @@ local function config_menu(cfg_data)
             cfg_data = monitor.configure_monitor(cfg_data)
 
         elseif choice == "3" then
-            -- Package settings
             ui.header("Package Settings")
             local mode = ui.menu({
                 { key = "1", label = "Auto-scan (recommended)" },
@@ -3513,7 +3514,7 @@ local function config_menu(cfg_data)
 
             if mode == "1" then
                 config.set(cfg_data, "packages.mode", "auto")
-                local prefix = ui.input("Package prefix for scanning", config.get(cfg_data, "packages.prefix", "roblox"))
+                local prefix = ui.input("Package prefix for scanning", config.get(cfg_data, "packages.prefix", "com.roblox"))
                 config.set(cfg_data, "packages.prefix", prefix)
             elseif mode == "2" then
                 config.set(cfg_data, "packages.mode", "manual")
@@ -3537,19 +3538,28 @@ local function config_menu(cfg_data)
             grid.menu(cfg_data, packages)
 
         elseif choice == "5" then
+            local packages = device.find_roblox_packages(cfg_data)
+            local optimizer = require("lib.optimizer")
+            optimizer.menu(packages)
+
+        elseif choice == "6" then
+            local autoexec = require("lib.autoexec")
+            autoexec.menu()
+
+        elseif choice == "7" then
             ui.header("Raw Configuration")
             local raw = json.encode(cfg_data)
             print(raw)
             ui.info("Press Enter to continue...")
             io.read("*l")
 
-        elseif choice == "6" then
+        elseif choice == "8" then
             if ui.confirm("Reset ALL settings to defaults? This cannot be undone!", false) then
                 cfg_data = config.DEFAULT
                 config.save(cfg_data)
-                ui.success("Config reset to defaults!")
-                shell.sleep(1)
+                ui.success("Settings reset to defaults!")
             end
+            shell.sleep(1)
 
         elseif choice == "0" or choice == nil then
             break
