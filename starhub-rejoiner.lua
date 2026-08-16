@@ -3366,6 +3366,350 @@ return api
 end
 
 -- ============================================================
+-- MODULE: optimizer
+-- ============================================================
+_MODULES["optimizer"] = function()
+-- StarhubRejoiner: Roblox Optimizer
+-- Manipulate ClientAppSettings.json for Potato Mode and FPS Unlock
+
+local shell = require("shell")
+local ui = require("ui")
+
+local optimizer = {}
+
+-- known fast settings for potato mode (15 FPS, lowest graphics)
+local POTATO_JSON = [[
+{
+  "DFIntTaskSchedulerTargetFps": "15",
+  "FFlagDisablePostFx": "True",
+  "FFlagDebugGraphicsDisableCSGv2": "True",
+  "FFlagDebugGraphicsPreferD3D11": "False",
+  "FIntRenderShadowIntensity": "0",
+  "FFlagDebugGraphicsPreferOpenGL": "True",
+  "DFIntMaxFrameBufferSize": "4",
+  "FFlagFastAnimBypassTimeCheck": "True",
+  "FFlagGameBasicSettingsFramerateCap": "True"
+}
+]]
+
+-- 60 fps unlock
+local SMOOTH_JSON = [[
+{
+  "DFIntTaskSchedulerTargetFps": "60",
+  "FFlagGameBasicSettingsFramerateCap": "True"
+}
+]]
+
+--- Inject ClientAppSettings.json to a package
+---@param package_name string
+---@param json_content string
+---@return boolean success
+---@return string|nil err
+function optimizer.apply(package_name, json_content)
+    local target_dir = "/data/data/" .. package_name .. "/files/ClientSettings"
+    local target_file = target_dir .. "/ClientAppSettings.json"
+    
+    -- create dir safely
+    local code, out = shell.su("mkdir -p " .. shell.quote(target_dir))
+    if code ~= 0 then
+        return false, "Failed to create directory: " .. tostring(out)
+    end
+    
+    -- write file via temp to avoid selinux issues with echo directly to /data/data
+    local temp_file = "/data/local/tmp/ClientAppSettings_" .. package_name .. ".json"
+    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", shell.quote(temp_file), json_content)
+    code, out = shell.su(echo_cmd)
+    if code ~= 0 then
+        return false, "Failed to write temp file: " .. tostring(out)
+    end
+    
+    -- move and chown
+    shell.su("cp " .. shell.quote(temp_file) .. " " .. shell.quote(target_file))
+    shell.su("rm -f " .. shell.quote(temp_file))
+    
+    -- chown to app uid
+    local _, uid_output = shell.su("stat -c '%u' /data/data/" .. shell.quote(package_name) .. " 2>/dev/null")
+    local uid = shell.trim(uid_output)
+    if uid ~= "" and uid ~= "0" then
+        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir))
+        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_file))
+    end
+    shell.su("chmod 777 " .. shell.quote(target_dir))
+    shell.su("chmod 666 " .. shell.quote(target_file))
+    
+    return true, nil
+end
+
+--- Remove ClientAppSettings.json from a package
+---@param package_name string
+function optimizer.remove(package_name)
+    local target_file = "/data/data/" .. package_name .. "/files/ClientSettings/ClientAppSettings.json"
+    shell.su("rm -f " .. shell.quote(target_file))
+    return true
+end
+
+--- Interactive menu for Optimization
+---@param packages table List of installed roblox packages
+function optimizer.menu(packages)
+    while true do
+        ui.header("Optimization (FPS & Graphics)")
+        
+        if #packages == 0 then
+            ui.error("No packages found!")
+            ui.info("Press Enter to continue...")
+            io.read("*l")
+            return
+        end
+        
+        local action = ui.menu({
+            { key = "1", label = "Potato Mode (15 FPS, Rata Kiri)" },
+            { key = "2", label = "Smooth Mode (60 FPS Unlock)" },
+            { key = "3", label = "Remove Optimization (Default)" },
+            { separator = true },
+            { key = "0", label = "Back", color = ui.color.gray },
+        }, "Select optimization profile")
+        
+        if not action or action == "0" then
+            break
+        end
+        
+        -- Target selection
+        ui.info("Select target package:")
+        local p_menu = {}
+        for i, pkg in ipairs(packages) do
+            p_menu[#p_menu + 1] = { key = tostring(i), label = pkg }
+        end
+        p_menu[#p_menu + 1] = { key = "a", label = "All Packages", color = ui.color.cyan }
+        p_menu[#p_menu + 1] = { key = "0", label = "Cancel", color = ui.color.gray }
+        
+        local choice = ui.menu(p_menu, "Target")
+        
+        local targets = {}
+        if choice == "a" then
+            targets = packages
+        else
+            local idx = tonumber(choice)
+            if idx and idx > 0 and idx <= #packages then
+                targets = { packages[idx] }
+            else
+                goto continue_loop
+            end
+        end
+        
+        for _, pkg in ipairs(targets) do
+            ui.info("Applying to " .. pkg .. "...")
+            -- Stop app first
+            shell.am_force_stop(pkg)
+            
+            if action == "1" then
+                local ok, err = optimizer.apply(pkg, POTATO_JSON)
+                if ok then ui.success("Potato mode applied to " .. pkg) else ui.error(tostring(err)) end
+            elseif action == "2" then
+                local ok, err = optimizer.apply(pkg, SMOOTH_JSON)
+                if ok then ui.success("Smooth mode applied to " .. pkg) else ui.error(tostring(err)) end
+            elseif action == "3" then
+                optimizer.remove(pkg)
+                ui.success("Optimization removed for " .. pkg)
+            end
+        end
+        
+        ::continue_loop::
+        print("")
+        ui.info("Press Enter to continue...")
+        io.read("*l")
+    end
+end
+
+return optimizer
+
+end
+
+-- ============================================================
+-- MODULE: autoexec
+-- ============================================================
+_MODULES["autoexec"] = function()
+-- StarhubRejoiner: Autoexecute Manager
+-- Manage scripts in Delta/Autoexecute
+
+local shell = require("shell")
+local ui = require("ui")
+
+local autoexec = {}
+
+local DELTA_AUTOEXEC_DIR = "/sdcard/Delta/Autoexecute"
+
+--- Ensure the directory exists
+function autoexec.init()
+    shell.su("mkdir -p " .. shell.quote(DELTA_AUTOEXEC_DIR))
+end
+
+--- Get a list of scripts in the autoexecute directory
+---@return table list of filenames
+function autoexec.list_scripts()
+    local code, output = shell.su("ls -1 " .. shell.quote(DELTA_AUTOEXEC_DIR) .. " 2>/dev/null")
+    local scripts = {}
+    if code == 0 and output then
+        for line in output:gmatch("[^\n]+") do
+            if line ~= "" then
+                scripts[#scripts + 1] = shell.trim(line)
+            end
+        end
+    end
+    return scripts
+end
+
+--- Download a script from URL and save it to the autoexec directory
+---@param url string
+---@param filename string
+---@return boolean success
+---@return string|nil err
+function autoexec.add_from_url(url, filename)
+    local target_path = DELTA_AUTOEXEC_DIR .. "/" .. filename
+    
+    -- Using curl to download directly
+    local code, out = shell.su("curl -k -sL " .. shell.quote(url) .. " -o " .. shell.quote(target_path) .. " 2>&1")
+    if code ~= 0 then
+        return false, "Failed to download: " .. tostring(out)
+    end
+    return true, nil
+end
+
+--- Write a script manually to the autoexec directory
+---@param filename string
+---@param content string
+---@return boolean success
+---@return string|nil err
+function autoexec.add_manual(filename, content)
+    local target_path = DELTA_AUTOEXEC_DIR .. "/" .. filename
+    local temp_path = "/data/local/tmp/" .. filename
+    
+    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", shell.quote(temp_path), content)
+    local code, out = shell.su(echo_cmd)
+    if code ~= 0 then
+        return false, "Failed to write temp file: " .. tostring(out)
+    end
+    
+    shell.su("cp " .. shell.quote(temp_path) .. " " .. shell.quote(target_path))
+    shell.su("rm -f " .. shell.quote(temp_path))
+    return true, nil
+end
+
+--- Delete a script
+---@param filename string
+function autoexec.delete(filename)
+    local target_path = DELTA_AUTOEXEC_DIR .. "/" .. filename
+    shell.su("rm -f " .. shell.quote(target_path))
+end
+
+--- Main menu for Autoexecute Manager
+function autoexec.menu()
+    autoexec.init()
+    
+    while true do
+        ui.header("Delta Autoexecute Manager")
+        ui.info("Directory: " .. ui.c(DELTA_AUTOEXEC_DIR, ui.color.cyan))
+        
+        local scripts = autoexec.list_scripts()
+        if #scripts == 0 then
+            ui.info("Status: " .. ui.c("No scripts found", ui.color.gray))
+        else
+            ui.info("Current Scripts:")
+            for i, script in ipairs(scripts) do
+                print("  [" .. i .. "] " .. script)
+            end
+        end
+        print("")
+        
+        local action = ui.menu({
+            { key = "1", label = "Add script from URL (Pastebin/Github)" },
+            { key = "2", label = "Add script manually (Paste text)" },
+            { key = "3", label = "Delete a script", color = ui.color.red },
+            { separator = true },
+            { key = "0", label = "Back", color = ui.color.gray },
+        }, "Select action")
+        
+        if not action or action == "0" then
+            break
+        end
+        
+        if action == "1" then
+            local url = ui.input("Enter RAW URL (e.g., https://pastebin.com/raw/...)")
+            if url and url ~= "" then
+                local filename = ui.input("Enter filename to save as (e.g., myscript.lua)", "script.lua")
+                if filename and filename ~= "" then
+                    ui.info("Downloading...")
+                    local ok, err = autoexec.add_from_url(url, filename)
+                    if ok then
+                        ui.success("Script saved as " .. filename)
+                    else
+                        ui.error(err)
+                    end
+                end
+            end
+            ui.info("Press Enter to continue...")
+            io.read("*l")
+            
+        elseif action == "2" then
+            local filename = ui.input("Enter filename (e.g., myscript.lua)", "script.lua")
+            if filename and filename ~= "" then
+                print("")
+                ui.info("Paste your script content below (Press Enter twice on an empty line to finish):")
+                local lines = {}
+                while true do
+                    io.write(ui.color.cyan .. "> " .. ui.color.reset)
+                    local line = io.read("*l")
+                    if not line or line == "" then
+                        break
+                    end
+                    lines[#lines + 1] = line
+                end
+                
+                if #lines > 0 then
+                    local content = table.concat(lines, "\n")
+                    local ok, err = autoexec.add_manual(filename, content)
+                    if ok then
+                        ui.success("Script saved as " .. filename)
+                    else
+                        ui.error(err)
+                    end
+                else
+                    ui.warn("No content provided.")
+                end
+            end
+            ui.info("Press Enter to continue...")
+            io.read("*l")
+            
+        elseif action == "3" then
+            if #scripts == 0 then
+                ui.error("No scripts to delete!")
+            else
+                local items = {}
+                for i, script in ipairs(scripts) do
+                    items[#items + 1] = { key = tostring(i), label = script }
+                end
+                items[#items + 1] = { key = "0", label = "Cancel", color = ui.color.gray }
+                
+                local choice = ui.menu(items, "Select script to delete")
+                local idx = tonumber(choice)
+                if idx and idx > 0 and idx <= #scripts then
+                    local target = scripts[idx]
+                    if ui.confirm("Delete " .. target .. "?", false) then
+                        autoexec.delete(target)
+                        ui.success("Deleted " .. target)
+                    end
+                end
+            end
+            ui.info("Press Enter to continue...")
+            io.read("*l")
+        end
+    end
+end
+
+return autoexec
+
+end
+
+-- ============================================================
 -- MAIN ENTRY POINT
 -- ============================================================
 -- ============================================================
