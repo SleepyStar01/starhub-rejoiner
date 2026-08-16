@@ -2147,6 +2147,7 @@ function cookie.injection_menu(cfg_data, packages)
 
     -- Show available packages
     ui.info("Available packages:")
+    local masked_display = config.get(cfg_data, "cookie.masked_display", true)
     local menu_items = {}
     for i, pkg in ipairs(packages) do
         local existing = config.get_cookie(cfg_data, pkg)
@@ -2157,7 +2158,13 @@ function cookie.injection_menu(cfg_data, packages)
                 config.save(cfg_data)
             end
         end
-        local status = existing and (ui.c("has cookie", ui.color.green)) or (ui.c("no cookie", ui.color.gray))
+        local status
+        if existing then
+            local disp = masked_display and cookie.mask(existing) or existing
+            status = ui.c(disp, ui.color.green)
+        else
+            status = ui.c("no cookie", ui.color.gray)
+        end
         menu_items[#menu_items + 1] = {
             key = tostring(i),
             label = pkg .. "  " .. status,
