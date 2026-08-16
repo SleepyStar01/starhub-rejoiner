@@ -2004,7 +2004,62 @@ function cookie.inject(package_name, cookie_value)
         return cookie.inject_sqlite(package_name, db_path, cookie_value)
     end
 
-    return false, "Database belum terbentuk!\n\n💡 SOLUSI:\n1. Buka game " .. package_name .. "\n2. Klik tombol 'Sign In' (sampai muncul kolom login)\n3. Tutup gamenya, lalu coba inject lagi disini."
+    -- Target doesn't have a DB. Let's find a template from another package!
+    ui.warn("Cookie database not found, searching for a template from other clones...")
+    
+    -- Needs to require device locally to avoid circular dependency
+    local device = require("device")
+    local packages = device.scan_packages()
+    local template_db_path = nil
+
+    for _, pkg in ipairs(packages) do
+        if pkg ~= package_name then
+            local path, t = cookie.find_db(pkg)
+            if path and t == "sqlite" then
+                -- Check if it actually has .ROBLOSECURITY (so we can UPDATE it)
+                local _, out = shell.sqlite(path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
+                if out and out:match("1") then
+                    template_db_path = path
+                    break
+                end
+            end
+        end
+    end
+
+    if not template_db_path then
+        return false, "Gagal menemukan template database!\n\n💡 SOLUSI:\n1. Buka salah satu clone Roblox (bebas yang mana aja)\n2. Login manual sekali aja pakai akun apa pun\n3. Setelah berhasil login, tutup gamenya\n4. Coba inject lagi kesini, dijamin langsung tembus selamanya!"
+    end
+
+    ui.info("Found template from another clone: " .. template_db_path)
+
+    -- Determine target path based on template's relative path
+    local relative_path = template_db_path:match("/data/data/[^/]+/(.+)")
+    local target_db_path = "/data/data/" .. package_name .. "/" .. relative_path
+    local target_dir = target_db_path:match("(.+)/[^/]+$")
+    local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
+
+    -- Create directories
+    shell.su("mkdir -p " .. shell.quote(target_dir))
+    
+    -- Copy template to temp
+    shell.su("cp " .. shell.quote(template_db_path) .. " " .. shell.quote(temp_db))
+    
+    -- Update the cookie in temp
+    ui.info("Injecting via Template...")
+    local update_sql = "UPDATE cookies SET value=" .. shell.quote(cookie_value) .. " WHERE name='.ROBLOSECURITY';"
+    local code, output = shell.sqlite(temp_db, update_sql)
+    if code ~= 0 then
+        return false, "Failed to update template: " .. tostring(output)
+    end
+
+    -- Move to final destination
+    shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(target_db_path))
+    shell.su("rm -f " .. shell.quote(temp_db))
+
+    -- Fix permissions
+    cookie.fix_permissions(package_name, target_db_path)
+    ui.success("Cookie injected via Template Copy!")
+    return true, nil
 end
 
 --- Inject cookie via SQLite database
@@ -2016,109 +2071,47 @@ end
 function cookie.inject_sqlite(package_name, db_path, cookie_value)
     ui.info("Injecting via SQLite: " .. db_path)
 
-    local info = COOKIE_DB_INFO
-    -- Calculate expiration (1 year from now in microseconds since epoch)
-    local expires = tostring(os.time() + 365 * 24 * 3600)
-
-    -- Build SQL to insert/replace the cookie
-    local sql = string.format(
-        [[DELETE FROM %s WHERE host_key='%s' AND name='%s';]] ..
-        [[INSERT INTO %s (host_key, name, value, path, secure, httponly, has_expires, expires_utc, is_persistent, creation_utc, last_access_utc) ]] ..
-        [[VALUES ('%s', '%s', '%s', '%s', %d, %d, 1, %s, 1, %s, %s);]],
-        info.table_name, info.domain, info.name,
-        info.table_name,
-        info.domain, info.name, cookie_value, info.path,
-        info.secure, info.httponly,
-        expires, expires, expires
-    )
-
-    local code, output = shell.sqlite(db_path, sql)
-    if code ~= 0 then
-        -- Table might not have all columns, try simpler insert
-        sql = string.format(
-            [[DELETE FROM %s WHERE host_key='%s' AND name='%s';]] ..
-            [[INSERT INTO %s (host_key, name, value, path) ]] ..
-            [[VALUES ('%s', '%s', '%s', '%s');]],
-            info.table_name, info.domain, info.name,
-            info.table_name,
-            info.domain, info.name, cookie_value, info.path
-        )
-        code, output = shell.sqlite(db_path, sql)
-    end
-
-    if code == 0 then
-        -- Fix permissions
-        cookie.fix_permissions(package_name, db_path)
-        ui.success("Cookie injected successfully!")
-        return true, nil
-    else
-        return false, "SQLite error: " .. tostring(output)
-    end
-end
-
---- Direct cookie injection (create WebView cookie DB from scratch)
----@param package_name string
----@param cookie_value string
----@return boolean success
----@return string|nil error
-function cookie.inject_direct(package_name, cookie_value)
-    -- Create the WebView directory structure
-    local webview_dir = "/data/data/" .. package_name .. "/app_webview/Default"
-    local db_path = webview_dir .. "/Cookies"
     local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
+    shell.su("cp " .. shell.quote(db_path) .. " " .. shell.quote(temp_db))
 
-    shell.su("mkdir -p " .. shell.quote(webview_dir))
-    shell.su("rm -f " .. shell.quote(temp_db))
-
-    local info = COOKIE_DB_INFO
-    local expires = tostring(os.time() + 365 * 24 * 3600)
-
-    -- Create SQLite database with cookie table
-    local create_sql = [[
-        CREATE TABLE IF NOT EXISTS cookies (
-            creation_utc INTEGER NOT NULL,
-            host_key TEXT NOT NULL,
-            name TEXT NOT NULL,
-            value TEXT NOT NULL,
-            path TEXT NOT NULL DEFAULT '/',
-            expires_utc INTEGER NOT NULL DEFAULT 0,
-            is_secure INTEGER NOT NULL DEFAULT 0,
-            is_httponly INTEGER NOT NULL DEFAULT 0,
-            last_access_utc INTEGER NOT NULL DEFAULT 0,
-            has_expires INTEGER NOT NULL DEFAULT 1,
-            is_persistent INTEGER NOT NULL DEFAULT 1,
-            priority INTEGER NOT NULL DEFAULT 1,
-            samesite INTEGER NOT NULL DEFAULT -1,
-            source_scheme INTEGER NOT NULL DEFAULT 0
-        );
-    ]]
-
-    local code, output = shell.sqlite(temp_db, create_sql)
-    if code ~= 0 then
-        return false, "Failed to create cookie database in tmp: " .. tostring(output)
+    -- Try UPDATE first (Schema agnostic)
+    local update_sql = "UPDATE cookies SET value=" .. shell.quote(cookie_value) .. " WHERE name='.ROBLOSECURITY';"
+    shell.sqlite(temp_db, update_sql)
+    
+    -- Check if it was updated
+    local _, check_out = shell.sqlite(temp_db, "SELECT value FROM cookies WHERE name='.ROBLOSECURITY';")
+    if not check_out or shell.trim(check_out) == "" then
+        -- We must INSERT.
+        local info = COOKIE_DB_INFO
+        local expires = tostring(os.time() + 365 * 24 * 3600)
+        
+        -- Try generic Chromium schema
+        local insert_sql = string.format(
+            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+            expires, info.domain, info.name, cookie_value, info.path, expires, expires
+        )
+        local c2, _ = shell.sqlite(temp_db, insert_sql)
+        if c2 ~= 0 then
+            -- Fallback to older Chromium schema
+            insert_sql = string.format(
+                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+                expires, info.domain, info.name, cookie_value, info.path, expires, expires
+            )
+            shell.sqlite(temp_db, insert_sql)
+        end
     end
 
-    -- Insert the cookie
-    local insert_sql = string.format(
-        [[INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) ]] ..
-        [[VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);]],
-        expires, info.domain, info.name, cookie_value, info.path, expires, expires
-    )
-
-    code, output = shell.sqlite(temp_db, insert_sql)
-    if code ~= 0 then
-        return false, "Failed to insert cookie into tmp: " .. tostring(output)
-    end
-
-    -- Move to final destination
+    -- Move temp_db back to db_path
     shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(db_path))
     shell.su("rm -f " .. shell.quote(temp_db))
 
     -- Fix permissions
     cookie.fix_permissions(package_name, db_path)
-    ui.success("Cookie injected (direct method)!")
+    ui.success("Cookie injected successfully!")
     return true, nil
 end
+
+
 
 --- Fix file permissions after injection
 ---@param package_name string
