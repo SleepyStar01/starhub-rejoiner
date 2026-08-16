@@ -1,3 +1,4 @@
-/opensource/
-/start.sh
-/rejoiner
+*
+!starhub-rejoiner.lua
+!README.md
+!.gitignore
