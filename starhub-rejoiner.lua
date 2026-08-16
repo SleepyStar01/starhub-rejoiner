@@ -2136,153 +2136,160 @@ end
 ---@param packages table Available packages
 ---@return table cfg_data (modified)
 function cookie.injection_menu(cfg_data, packages)
-    ui.header("Cookie Injection")
+    while true do
+        ui.header("Cookie Injection")
 
-    if #packages == 0 then
-        ui.error("No Roblox packages found on device!")
-        ui.info("Press Enter to go back...")
-        io.read("*l")
-        return cfg_data
-    end
+        if #packages == 0 then
+            ui.error("No Roblox packages found on device!")
+            ui.info("Press Enter to go back...")
+            io.read("*l")
+            return cfg_data
+        end
 
-    -- Show available packages
-    ui.info("Available packages:")
-    local masked_display = config.get(cfg_data, "cookie.masked_display", true)
-    local menu_items = {}
-    for i, pkg in ipairs(packages) do
-        local existing = config.get_cookie(cfg_data, pkg)
-        if not existing then
-            existing = cookie.extract(pkg)
-            if existing then
-                config.set_cookie(cfg_data, pkg, existing)
-                config.save(cfg_data)
+        -- Show available packages
+        ui.info("Available packages:")
+        local masked_display = config.get(cfg_data, "cookie.masked_display", true)
+        local menu_items = {}
+        for i, pkg in ipairs(packages) do
+            local existing = config.get_cookie(cfg_data, pkg)
+            if not existing then
+                existing = cookie.extract(pkg)
+                if existing then
+                    config.set_cookie(cfg_data, pkg, existing)
+                    config.save(cfg_data)
+                end
             end
-        end
-        local status
-        if existing then
-            local disp = masked_display and cookie.mask(existing) or existing
-            status = ui.c(disp, ui.color.green)
-        else
-            status = ui.c("no cookie", ui.color.gray)
-        end
-        menu_items[#menu_items + 1] = {
-            key = tostring(i),
-            label = pkg .. "  " .. status,
-        }
-    end
-    menu_items[#menu_items + 1] = { separator = true }
-    menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
-
-    local choice = ui.menu(menu_items, "Select package")
-    local idx = tonumber(choice)
-
-    if not idx or idx == 0 or idx > #packages then
-        return cfg_data
-    end
-
-    local target_pkg = packages[idx]
-    
-    local existing = config.get_cookie(cfg_data, target_pkg)
-    if not existing then
-        existing = cookie.extract(target_pkg)
-        if existing then
-            -- Save extracted cookie to config
-            config.set_cookie(cfg_data, target_pkg, existing)
-            config.save(cfg_data)
-        end
-    end
-    
-    local masked_display = config.get(cfg_data, "cookie.masked_display", true)
-    
-    print("")
-    ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
-    if existing then
-        local disp = masked_display and cookie.mask(existing) or existing
-        ui.kv("Current Cookie", disp)
-    else
-        ui.kv("Current Cookie", ui.c("No cookie stored", ui.color.gray))
-    end
-    print("")
-
-    -- Ask for action
-    local action = ui.menu({
-        { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
-        { key = "2", label = "Verify a cookie manually (Roblox API)" },
-        { key = "3", label = "Remove cookie", color = ui.color.red },
-        { key = "0", label = "Back", color = ui.color.gray },
-    }, "Select action")
-
-    if action == "1" then
-        -- Inject new cookie
-        print("")
-        ui.info("Paste your .ROBLOSECURITY cookie below:")
-        ui.dim("(The cookie starting with _|WARNING: or just the token)")
-        print("")
-        io.write(ui.color.cyan .. "> " .. ui.color.reset)
-        io.flush()
-        local cookie_input = io.read("*l")
-
-        if not cookie_input or cookie_input == "" then
-            ui.warn("No cookie provided")
-        else
-            ui.info("Verifying cookie before injection...")
-            local valid, name_or_err = shell.verify_cookie(cookie.clean(cookie_input))
-            if valid then
-                ui.success("Cookie is valid! Account: " .. ui.c(name_or_err, ui.color.green))
+            local status
+            if existing then
+                local disp = masked_display and cookie.mask(existing) or existing
+                status = ui.c(disp, ui.color.green)
             else
-                ui.warn("Cookie verification failed: " .. name_or_err)
-                if not ui.confirm("Do you still want to inject this cookie?", false) then
-                    return cfg_data
+                status = ui.c("no cookie", ui.color.gray)
+            end
+            menu_items[#menu_items + 1] = {
+                key = tostring(i),
+                label = pkg .. "  " .. status,
+            }
+        end
+        menu_items[#menu_items + 1] = { separator = true }
+        menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
+
+        local choice = ui.menu(menu_items, "Select package")
+        local idx = tonumber(choice)
+
+        if not idx or idx == 0 or idx > #packages then
+            return cfg_data
+        end
+
+        local target_pkg = packages[idx]
+
+        while true do
+            local existing = config.get_cookie(cfg_data, target_pkg)
+            if not existing then
+                existing = cookie.extract(target_pkg)
+                if existing then
+                    -- Save extracted cookie to config
+                    config.set_cookie(cfg_data, target_pkg, existing)
+                    config.save(cfg_data)
                 end
             end
             
-            local ok, inject_err = cookie.inject(target_pkg, cookie_input)
-            if ok then
-                config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
-                config.save(cfg_data)
-                ui.success("Cookie saved to config and injected!")
+            print("")
+            ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
+            if existing then
+                local disp = masked_display and cookie.mask(existing) or existing
+                ui.kv("Current Cookie", disp)
             else
-                ui.error("Injection failed: " .. tostring(inject_err))
-                if ui.confirm("Save cookie to config anyway?", true) then
-                    config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                ui.kv("Current Cookie", ui.c("No cookie stored", ui.color.gray))
+            end
+            print("")
+
+            -- Ask for action
+            local action = ui.menu({
+                { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
+                { key = "2", label = "Verify a cookie manually (Roblox API)" },
+                { key = "3", label = "Remove cookie", color = ui.color.red },
+                { key = "0", label = "Back", color = ui.color.gray },
+            }, "Select action")
+
+            if not action or action == "0" then
+                break -- Go back to package list
+            end
+
+            if action == "1" then
+                -- Inject new cookie
+                print("")
+                ui.info("Paste your .ROBLOSECURITY cookie below:")
+                ui.dim("(The cookie starting with _|WARNING: or just the token)")
+                print("")
+                io.write(ui.color.cyan .. "> " .. ui.color.reset)
+                io.flush()
+                local cookie_input = io.read("*l")
+
+                if not cookie_input or cookie_input == "" then
+                    ui.warn("No cookie provided")
+                else
+                    ui.info("Verifying cookie before injection...")
+                    local valid, name_or_err = shell.verify_cookie(cookie.clean(cookie_input))
+                    if valid then
+                        ui.success("Cookie is valid! Account: " .. ui.c(name_or_err, ui.color.green))
+                    else
+                        ui.warn("Cookie verification failed: " .. name_or_err)
+                        if not ui.confirm("Do you still want to inject this cookie?", false) then
+                            -- Skip injection
+                            goto continue_action
+                        end
+                    end
+                    
+                    local ok, inject_err = cookie.inject(target_pkg, cookie_input)
+                    if ok then
+                        config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                        config.save(cfg_data)
+                        ui.success("Cookie saved to config and injected!")
+                    else
+                        ui.error("Injection failed: " .. tostring(inject_err))
+                        if ui.confirm("Save cookie to config anyway?", true) then
+                            config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                            config.save(cfg_data)
+                            ui.info("Cookie saved to config")
+                        end
+                    end
+                end
+
+            elseif action == "2" then
+                print("")
+                ui.info("Paste the cookie you want to verify:")
+                io.write(ui.color.cyan .. "> " .. ui.color.reset)
+                io.flush()
+                local test_cookie = io.read("*l")
+                
+                if test_cookie and test_cookie ~= "" then
+                    ui.info("Verifying cookie with Roblox API...")
+                    local valid, name_or_err = shell.verify_cookie(cookie.clean(test_cookie))
+                    if valid then
+                        ui.success("Cookie is VALID!")
+                        ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
+                    else
+                        ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
+                    end
+                else
+                    ui.warn("No cookie provided")
+                end
+
+            elseif action == "3" then
+                if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
+                    config.set_cookie(cfg_data, target_pkg, nil)
                     config.save(cfg_data)
-                    ui.info("Cookie saved to config")
+                    ui.success("Cookie removed")
                 end
             end
-        end
 
-    elseif action == "2" then
-        print("")
-        ui.info("Paste the cookie you want to verify:")
-        io.write(ui.color.cyan .. "> " .. ui.color.reset)
-        io.flush()
-        local test_cookie = io.read("*l")
-        
-        if test_cookie and test_cookie ~= "" then
-            ui.info("Verifying cookie with Roblox API...")
-            local valid, name_or_err = shell.verify_cookie(cookie.clean(test_cookie))
-            if valid then
-                ui.success("Cookie is VALID!")
-                ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
-            else
-                ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
-            end
-        else
-            ui.warn("No cookie provided")
-        end
-
-    elseif action == "3" then
-        if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
-            config.set_cookie(cfg_data, target_pkg, nil)
-            config.save(cfg_data)
-            ui.success("Cookie removed")
+            ::continue_action::
+            print("")
+            ui.info("Press Enter to continue...")
+            io.read("*l")
         end
     end
-
-    print("")
-    ui.info("Press Enter to continue...")
-    io.read("*l")
-    return cfg_data
 end
 
 return cookie
