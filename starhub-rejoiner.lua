@@ -1640,18 +1640,18 @@ function device.get_package_status(package_name)
         if activity_output and activity_output:find("RobloxActivity") then
             status.state = "running"
         end
+    end
 
-        -- Try to detect username from logcat
-        local username = device.detect_username(package_name)
-        if username then
-            status.username = username
-        end
+    -- Try to detect username from logcat/prefs
+    local username = device.detect_username(package_name)
+    if username then
+        status.username = username
+    end
 
-        -- Try to detect user ID from logcat
-        local user_id = device.detect_user_id(package_name)
-        if user_id then
-            status.user_id = user_id
-        end
+    -- Try to detect user ID from logcat/prefs
+    local user_id = device.detect_user_id(package_name)
+    if user_id then
+        status.user_id = user_id
     end
 
     return status
@@ -1678,19 +1678,19 @@ end
 function device.detect_username(package_name)
     -- Method 1: Check logcat for username patterns
     local pid = shell.get_pid(package_name)
-    if not pid then return nil end
+    if pid then
+        local _, logcat = shell.su(
+            "logcat -d -t 500 --pid=" .. tostring(pid) .. " 2>/dev/null | " ..
+            "grep -iE 'username|displayname|user.?name' | tail -3"
+        )
 
-    local _, logcat = shell.su(
-        "logcat -d -t 500 --pid=" .. tostring(pid) .. " 2>/dev/null | " ..
-        "grep -iE 'username|displayname|user.?name' | tail -3"
-    )
-
-    if logcat and logcat ~= "" then
-        -- Try various patterns
-        local name = logcat:match('[Uu]sername[=:"%s]+([%w_]+)')
-            or logcat:match('[Dd]isplay[Nn]ame[=:"%s]+([%w_]+)')
-        if name and name ~= "" and name ~= "null" and name ~= "unknown" then
-            return name
+        if logcat and logcat ~= "" then
+            -- Try various patterns
+            local name = logcat:match('[Uu]sername[=:"%s]+([%w_]+)')
+                or logcat:match('[Dd]isplay[Nn]ame[=:"%s]+([%w_]+)')
+            if name and name ~= "" and name ~= "null" and name ~= "unknown" then
+                return name
+            end
         end
     end
 
@@ -1714,15 +1714,27 @@ end
 ---@return string|nil user_id
 function device.detect_user_id(package_name)
     local pid = shell.get_pid(package_name)
-    if not pid then return nil end
+    if pid then
+        local _, logcat = shell.su(
+            "logcat -d -t 500 --pid=" .. tostring(pid) .. " 2>/dev/null | " ..
+            "grep -iE 'userid|user.?id' | tail -3"
+        )
 
-    local _, logcat = shell.su(
-        "logcat -d -t 500 --pid=" .. tostring(pid) .. " 2>/dev/null | " ..
-        "grep -iE 'userid|user.?id' | tail -3"
+        if logcat and logcat ~= "" then
+            local uid = logcat:match('[Uu]ser[_]?[Ii]d[=:"%s]+(%d+)')
+            if uid and uid ~= "" and uid ~= "0" then
+                return uid
+            end
+        end
+    end
+    
+    -- Method 2: Check shared preferences
+    local _, prefs = shell.su(
+        "cat /data/data/" .. shell.quote(package_name) ..
+        '/shared_prefs/*.xml 2>/dev/null | grep -iE "userid|user_id" | head -3'
     )
-
-    if logcat and logcat ~= "" then
-        local uid = logcat:match('[Uu]ser[_]?[Ii]d[=:"%s]+(%d+)')
+    if prefs and prefs ~= "" then
+        local uid = prefs:match('>([%d]+)</')
         if uid and uid ~= "" and uid ~= "0" then
             return uid
         end
