@@ -2000,13 +2000,11 @@ function cookie.inject(package_name, cookie_value)
     -- Step 2: Find cookie database
     local db_path, db_type = cookie.find_db(package_name)
 
-    if db_type == "sqlite" and db_path then
+    if db_path and db_type == "sqlite" then
         return cookie.inject_sqlite(package_name, db_path, cookie_value)
     end
 
-    -- Fallback: try to create/inject via known path
-    ui.warn("Cookie database not found, attempting direct creation...")
-    return cookie.inject_direct(package_name, cookie_value)
+    return false, "Database belum terbentuk!\n\n💡 SOLUSI:\n1. Buka game " .. package_name .. "\n2. Klik tombol 'Sign In' (sampai muncul kolom login)\n3. Tutup gamenya, lalu coba inject lagi disini."
 end
 
 --- Inject cookie via SQLite database
