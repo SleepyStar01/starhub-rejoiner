@@ -653,8 +653,15 @@ end
 ---@return number exit_code
 ---@return string output
 function shell.sqlite(db_path, sql)
+    -- Find sqlite3 absolute path in the non-su environment (Termux usually has it in a non-standard path)
+    local _, sqlite_path = shell.exec("command -v sqlite3 2>/dev/null")
+    sqlite_path = shell.trim(sqlite_path or "")
+    if sqlite_path == "" then
+        sqlite_path = "sqlite3" -- Fallback
+    end
+
     return shell.su(
-        "sqlite3 " .. shell.quote(db_path) .. " " .. shell.quote(sql) .. " 2>&1"
+        sqlite_path .. " " .. shell.quote(db_path) .. " " .. shell.quote(sql) .. " 2>&1"
     )
 end
 
