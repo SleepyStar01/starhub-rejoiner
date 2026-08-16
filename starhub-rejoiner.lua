@@ -3890,11 +3890,11 @@ local function config_menu(cfg_data)
 
         elseif choice == "5" then
             local packages = device.find_roblox_packages(cfg_data)
-            local optimizer = require("lib.optimizer")
+            local optimizer = require("optimizer")
             optimizer.menu(packages)
 
         elseif choice == "6" then
-            local autoexec = require("lib.autoexec")
+            local autoexec = require("autoexec")
             autoexec.menu()
 
         elseif choice == "7" then
