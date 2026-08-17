@@ -2088,24 +2088,103 @@ function cookie.inject_sqlite(package_name, db_path, cookie_value)
         local creation_utc = math.floor(current_unix * 1000000 + 11644473600000000)
         local expires_utc = creation_utc + math.floor(365 * 24 * 3600 * 1000000)
         
-        -- Try generic Chromium schema
-        local insert_sql = string.format(
-            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
-            creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
-        )
-        local c2, _ = shell.sqlite(temp_db, insert_sql)
-        if c2 ~= 0 then
-            -- Fallback to older Chromium schema
-            insert_sql = string.format(
-                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
+        -- Dynamically extract schema to prevent NOT NULL constraint failures on newer Chromium versions
+        local _, pragma_out = shell.sqlite(temp_db, "PRAGMA table_info(cookies);")
+        local success_insert = false
+        
+        if pragma_out and shell.trim(pragma_out) ~= "" then
+            local columns = {}
+            local values = {}
+            
+            for line in pragma_out:gmatch("[^\r\n]+") do
+                local parts = {}
+                for part in string.gmatch(line .. "|", "(.-)|") do
+                    table.insert(parts, part)
+                end
+                
+                if #parts >= 3 then
+                    local col_name = parts[2]
+                    local col_type = (parts[3] or ""):upper()
+                    
+                    if col_name and col_name ~= "" then
+                        table.insert(columns, col_name)
+                        
+                        -- Assign values based on column name
+                        if col_name == "creation_utc" or col_name == "last_access_utc" or col_name == "last_update_utc" then
+                            table.insert(values, tostring(creation_utc))
+                        elseif col_name == "expires_utc" then
+                            table.insert(values, tostring(expires_utc))
+                        elseif col_name == "host_key" or col_name == "top_frame_site_key" then
+                            table.insert(values, "'" .. info.domain .. "'")
+                        elseif col_name == "name" then
+                            table.insert(values, "'" .. info.name .. "'")
+                        elseif col_name == "value" then
+                            table.insert(values, "'" .. cookie_value .. "'")
+                        elseif col_name == "path" then
+                            table.insert(values, "'" .. info.path .. "'")
+                        elseif col_name == "is_secure" or col_name == "is_httponly" or col_name == "has_expires" or col_name == "is_persistent" or col_name == "secure" or col_name == "httponly" then
+                            table.insert(values, "1")
+                        elseif col_name == "priority" then
+                            table.insert(values, "1")
+                        elseif col_name == "samesite" then
+                            table.insert(values, "-1")
+                        elseif col_name == "source_scheme" then
+                            table.insert(values, "2")
+                        elseif col_name == "source_port" then
+                            table.insert(values, "443")
+                        elseif col_name == "is_same_party" then
+                            table.insert(values, "0")
+                        else
+                            if col_type:find("INT") then
+                                table.insert(values, "0")
+                            else
+                                table.insert(values, "''")
+                            end
+                        end
+                    end
+                end
+            end
+            
+            if #columns > 0 then
+                local insert_sql = string.format(
+                    "INSERT INTO cookies (%s) VALUES (%s);",
+                    table.concat(columns, ", "),
+                    table.concat(values, ", ")
+                )
+                local c2, err2 = shell.sqlite(temp_db, insert_sql)
+                if c2 == 0 then
+                    success_insert = true
+                else
+                    ui.warn("Dynamic INSERT failed: " .. tostring(err2))
+                end
+            end
+        end
+        
+        if not success_insert then
+            ui.warn("Falling back to generic schema...")
+            -- Try generic Chromium schema
+            local insert_sql = string.format(
+                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
                 creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
             )
-            shell.sqlite(temp_db, insert_sql)
+            local c2, _ = shell.sqlite(temp_db, insert_sql)
+            if c2 ~= 0 then
+                -- Fallback to older Chromium schema
+                insert_sql = string.format(
+                    "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
+                    creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
+                )
+                local c3, err3 = shell.sqlite(temp_db, insert_sql)
+                if c3 ~= 0 then
+                    ui.error("All INSERT methods failed!")
+                    return false, err3
+                end
+            end
         end
     end
 
-    -- Move temp_db back to db_path
-    shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(db_path))
+    -- Move temp_db back to db_path using cat to preserve SELinux context and inode
+    shell.su("cat " .. shell.quote(temp_db) .. " > " .. shell.quote(db_path))
     shell.su("rm -f " .. shell.quote(temp_db))
 
     -- Fix permissions
