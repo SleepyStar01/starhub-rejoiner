@@ -2009,7 +2009,7 @@ function cookie.inject(package_name, cookie_value, username)
         -- Delete existing shared_prefs to clear telemetry and prevent "Signed out" mismatch
         shell.su("rm -f " .. shell.quote(target_pkg_dir .. "/shared_prefs/*"))
         
-        -- Write minimal prefs.xml
+        -- Write minimal prefs.xml using echo (safe via su)
         local prefs_content = string.format([[
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -2018,11 +2018,9 @@ function cookie.inject(package_name, cookie_value, username)
 </map>
 ]], username, username)
         
-        local temp_xml = "temp_prefs.xml"
-        local f = io.open(temp_xml, "w")
-        if f then
-            f:write(prefs_content)
-            f:close()
+        local temp_xml = "/data/local/tmp/prefs_" .. package_name .. ".xml"
+        local code_echo = shell.su("echo " .. shell.quote(prefs_content) .. " > " .. temp_xml)
+        if code_echo == 0 then
             shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/prefs.xml"))
         else
             ui.warn("Failed to write prefs.xml to temp")
@@ -2048,68 +2046,31 @@ function cookie.inject(package_name, cookie_value, username)
         return result, err_msg
     end
 
-    ui.info("Cookie database not found, attempting direct creation...")
-    -- Fallback to creating the DB directly (since Native UI was bypassed by prefs.xml, it will read this DB!)
-    local target_db_path = "/data/data/" .. package_name .. "/app_webview/Default/Cookies"
-    local target_dir = "/data/data/" .. package_name .. "/app_webview/Default"
-    local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
+    ui.info("Cookie database not found. Generating schema via WebView...")
     
-    shell.su("mkdir -p " .. shell.quote(target_dir))
-    shell.su("rm -f " .. temp_db)
+    -- Trick to generate the perfect schema: Launch the app so Chromium creates the Cookies DB automatically!
+    shell.su("am start -n " .. shell.quote(package_name .. "/com.roblox.client.Activity"))
+    ui.info("Waiting for WebView initialization (5s)...")
+    shell.sleep(5)
+    shell.am_force_stop(package_name)
+    shell.sleep(1)
     
-    -- Generate the cookie DB with generic schema
-    local creation_utc = os.time() * 1000000 + 11644473600000000
-    local expires_utc = creation_utc + (365 * 24 * 60 * 60 * 1000000)
-    
-    -- Hybrid schema to satisfy both older and newer Chromium versions
-    local sql = string.format([[
-PRAGMA foreign_keys=OFF;
-BEGIN TRANSACTION;
-CREATE TABLE cookies (
-    creation_utc INTEGER NOT NULL,
-    host_key TEXT NOT NULL,
-    name TEXT NOT NULL,
-    value TEXT NOT NULL,
-    path TEXT NOT NULL,
-    expires_utc INTEGER NOT NULL,
-    is_secure INTEGER,
-    is_httponly INTEGER,
-    samesite INTEGER DEFAULT -1,
-    last_access_utc INTEGER NOT NULL,
-    has_expires INTEGER DEFAULT 1,
-    is_persistent INTEGER DEFAULT 1,
-    priority INTEGER DEFAULT 1,
-    encrypted_value BLOB DEFAULT '',
-    source_scheme INTEGER DEFAULT 0,
-    source_port INTEGER DEFAULT -1,
-    is_same_party INTEGER DEFAULT 0,
-    secure INTEGER,
-    httponly INTEGER
-);
-INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, secure, httponly, last_access_utc) 
-VALUES (%d, '.roblox.com', '.ROBLOSECURITY', '%s', '/', %d, 1, 1, 1, 1, %d);
-COMMIT;
-]], creation_utc, cookie_value, expires_utc, creation_utc)
-
-    local code, out = shell.sqlite(temp_db, sql)
-    
-    if code ~= 0 then
-        return false, "Failed to create cookie database in tmp: " .. (out or "unknown error")
+    -- Try finding the DB again
+    db_path, db_type = cookie.find_db(package_name)
+    if db_path and db_type == "sqlite" then
+        ui.info("Database generated! Injecting cookie...")
+        local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
+        
+        if username then
+            cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
+        end
+        cookie.fix_permissions(package_name, db_path)
+        
+        ui.success("Cookie injected (auto-schema method)!")
+        return result, err_msg
     end
 
-
-    -- Move to final destination
-    shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(target_db_path))
-    shell.su("rm -f " .. shell.quote(temp_db))
-
-    -- Fix permissions explicitly
-    if username then
-        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
-    end
-    cookie.fix_permissions(package_name, target_db_path)
-
-    ui.success("Cookie injected (direct method)!")
-    return true, nil
+    return false, "Failed to generate Cookies database automatically."
 end
 
 --- Inject cookie via SQLite database
