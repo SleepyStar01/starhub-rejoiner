@@ -3911,7 +3911,7 @@ local function config_menu(cfg_data)
             grid.menu(cfg_data, packages)
 
         elseif choice == "5" then
-            local packages = device.find_roblox_packages(cfg_data)
+            local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "com.roblox"))
             local optimizer = require("optimizer")
             optimizer.menu(packages)
 
