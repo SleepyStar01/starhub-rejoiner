@@ -2426,10 +2426,19 @@ function grid.apply(cfg_data, packages, rows, cols)
                 local right = left + cell_w
                 local bottom = top + cell_h
 
-                -- Launch activity in freeform mode with bounds
+                -- Launch activity
                 ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-                local cmd = string.format("am start --windowingMode 5 --bounds %d,%d,%d,%d -a android.intent.action.VIEW -p %s -d %s",
-                                          left, top, right, bottom, shell.quote(pkg), shell.quote(uri))
+                local cmd = ""
+                
+                -- Check if config has split screen explicitly requested
+                if config.get(cfg_data, "monitor.split_screen", false) then
+                    local w_mode = (i == 1) and 3 or 4
+                    cmd = string.format("am start --windowingMode %d -a android.intent.action.VIEW -p %s -d %s",
+                                        w_mode, shell.quote(pkg), shell.quote(uri))
+                else
+                    cmd = string.format("am start --windowingMode 5 --bounds %d,%d,%d,%d -a android.intent.action.VIEW -p %s -d %s",
+                                        left, top, right, bottom, shell.quote(pkg), shell.quote(uri))
+                end
                 local code, out = shell.su(cmd)
                 if out and shell.trim(out) ~= "" then
                     ui.warn("am output: " .. shell.trim(out))
@@ -2487,6 +2496,21 @@ function grid.menu(cfg_data, packages)
     local cols = ui.input_number("Enter number of columns", 2, 1, 10)
 
     if rows and cols then
+        local total = rows * cols
+        if total <= 2 then
+            local ask = ui.menu({
+                { key = "1", label = "Freeform Mode (Custom Bounds)" },
+                { key = "2", label = "Native Split-Screen Mode (Recommended)" },
+            }, "Grid Windowing Mode")
+            if ask == "2" then
+                cfg_data["monitor.split_screen"] = true
+            else
+                cfg_data["monitor.split_screen"] = false
+            end
+        else
+            cfg_data["monitor.split_screen"] = false
+        end
+
         grid.apply(cfg_data, target_packages, rows, cols)
         shell.sleep(2)
     end
