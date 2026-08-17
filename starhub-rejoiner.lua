@@ -1977,12 +1977,13 @@ function cookie.extract(package_name)
     return nil
 end
 
---- Inject a cookie into a Roblox package's data
+----- Inject a cookie into a Roblox package's data
 ---@param package_name string
 ---@param cookie_value string The .ROBLOSECURITY value
+---@param username string|nil The username of the account, used to bypass Native UI
 ---@return boolean success
 ---@return string|nil error_message
-function cookie.inject(package_name, cookie_value)
+function cookie.inject(package_name, cookie_value, username)
     -- Validate
     local valid, err = cookie.validate_format(cookie_value)
     if not valid then
@@ -1997,89 +1998,117 @@ function cookie.inject(package_name, cookie_value)
     shell.am_force_stop(package_name)
     shell.sleep(2)
 
-    -- Step 2: Find cookie database
+    -- Step 2: Write prefs.xml to bypass Native UI and clear telemetry
+    if username then
+        ui.info("Writing prefs.xml for " .. username .. "...")
+        local target_pkg_dir = "/data/data/" .. package_name
+        
+        -- Create directories
+        shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/shared_prefs"))
+        
+        -- Delete existing shared_prefs to clear telemetry and prevent "Signed out" mismatch
+        shell.su("rm -f " .. shell.quote(target_pkg_dir .. "/shared_prefs/*"))
+        
+        -- Write minimal prefs.xml
+        local prefs_content = string.format([[
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="username">%s</string>
+    <string name="displayName">%s</string>
+</map>
+]], username, username)
+        
+        local temp_xml = "temp_prefs.xml"
+        local f = io.open(temp_xml, "w")
+        if f then
+            f:write(prefs_content)
+            f:close()
+            shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/prefs.xml"))
+        else
+            ui.warn("Failed to write prefs.xml to temp")
+        end
+    end
+
+    -- Step 3: Find or Create SQLite database
     local db_path, db_type = cookie.find_db(package_name)
-    local has_session = false
 
     if db_path and db_type == "sqlite" then
-        -- Check if it actually has a session
-        local _, out = shell.sqlite(db_path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
-        if out and out:match("1") then
-            has_session = true
-        end
-    end
-
-    if has_session then
-        -- Target already has a logged-in session, just update the cookie directly
-        return cookie.inject_sqlite(package_name, db_path, cookie_value)
-    end
-
-    -- Target doesn't have a DB, OR it has a blank DB with no session. Let's find a template from another package!
-    ui.warn("Target is not logged in, searching for a template from other clones...")
-    
-    -- Needs to require device locally to avoid circular dependency
-    local device = require("device")
-    local packages = device.scan_packages()
-    local template_db_path = nil
-
-    for _, pkg in ipairs(packages) do
-        if pkg ~= package_name then
-            local path, t = cookie.find_db(pkg)
-            if path and t == "sqlite" then
-                -- Check if it actually has .ROBLOSECURITY (so we can UPDATE it)
-                local _, out = shell.sqlite(path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
-                if out and out:match("1") then
-                    template_db_path = path
-                    break
-                end
+        ui.info("Updating existing Cookies database...")
+        local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
+        
+        -- Fix permissions for prefs.xml if we created it
+        if username then
+            local pkg_info = shell.get_package_info(package_name)
+            if pkg_info and pkg_info.uid then
+                local uid = pkg_info.uid
+                shell.su("chown " .. uid .. ":" .. uid .. " /data/data/" .. package_name .. "/shared_prefs/prefs.xml")
+                shell.su("chmod 600 /data/data/" .. package_name .. "/shared_prefs/prefs.xml")
             end
         end
+        return result, err_msg
     end
 
-    if not template_db_path then
-        return false, "Gagal menemukan template database!\n\n💡 SOLUSI:\n1. Buka salah satu clone Roblox (bebas yang mana aja)\n2. Login manual sekali aja pakai akun apa pun\n3. Setelah berhasil login, tutup gamenya\n4. Coba inject lagi kesini, dijamin langsung tembus selamanya!"
-    end
-
-    ui.info("Found template from another clone: " .. template_db_path)
-
-    local template_pkg_dir = template_db_path:match("(/data/data/[^/]+)")
-    local target_pkg_dir = "/data/data/" .. package_name
-
-    -- Determine target path based on template's relative path
-    local relative_path = template_db_path:match("/data/data/[^/]+/(.+)")
-    local target_db_path = target_pkg_dir .. "/" .. relative_path
-    local target_dir = target_db_path:match("(.+)/[^/]+$")
+    ui.info("Cookie database not found, attempting direct creation...")
+    -- Fallback to creating the DB directly (since Native UI was bypassed by prefs.xml, it will read this DB!)
+    local target_db_path = "/data/data/" .. package_name .. "/app_webview/Default/Cookies"
+    local target_dir = "/data/data/" .. package_name .. "/app_webview/Default"
     local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
-
-    -- Create directories
+    
     shell.su("mkdir -p " .. shell.quote(target_dir))
+    shell.su("rm -f " .. temp_db)
     
-    -- Copy shared_prefs from template to trick Native UI into checking WebView!
-    ui.info("Copying shared_prefs from template...")
-    shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/shared_prefs") .. " " .. shell.quote(target_pkg_dir .. "/"))
+    -- Generate the cookie DB with generic schema
+    local creation_utc = os.time() * 1000000 + 11644473600000000
+    local expires_utc = creation_utc + (365 * 24 * 60 * 60 * 1000000)
     
-    -- Copy template DB to temp
-    shell.su("cp " .. shell.quote(template_db_path) .. " " .. shell.quote(temp_db))
+    -- Hybrid schema to satisfy both older and newer Chromium versions
+    local sql = string.format([[
+PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE cookies (
+    creation_utc INTEGER NOT NULL,
+    host_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    path TEXT NOT NULL,
+    expires_utc INTEGER NOT NULL,
+    is_secure INTEGER,
+    is_httponly INTEGER,
+    samesite INTEGER DEFAULT -1,
+    last_access_utc INTEGER NOT NULL,
+    has_expires INTEGER DEFAULT 1,
+    is_persistent INTEGER DEFAULT 1,
+    priority INTEGER DEFAULT 1,
+    encrypted_value BLOB DEFAULT '',
+    source_scheme INTEGER DEFAULT 0,
+    source_port INTEGER DEFAULT -1,
+    is_same_party INTEGER DEFAULT 0,
+    secure INTEGER,
+    httponly INTEGER
+);
+INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, secure, httponly, last_access_utc) 
+VALUES (%d, '.roblox.com', '.ROBLOSECURITY', '%s', '/', %d, 1, 1, 1, 1, %d);
+COMMIT;
+]], creation_utc, cookie_value, expires_utc, creation_utc)
+
+    local code, out = shell.sqlite(temp_db, sql)
     
-    -- Update the cookie in temp
-    ui.info("Injecting via Template...")
-    local update_sql = "UPDATE cookies SET value=" .. shell.quote(cookie_value) .. " WHERE name='.ROBLOSECURITY';"
-    local code, output = shell.sqlite(temp_db, update_sql)
     if code ~= 0 then
-        return false, "Failed to update template: " .. tostring(output)
+        return false, "Failed to create cookie database in tmp: " .. (out or "unknown error")
     end
+
 
     -- Move to final destination
     shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(target_db_path))
     shell.su("rm -f " .. shell.quote(temp_db))
 
-    -- Fix permissions recursively for the whole app data (by passing shared_prefs, it chowns the parent)
-    cookie.fix_permissions(package_name, target_pkg_dir .. "/shared_prefs")
-    
-    -- Also fix permissions for the db explicitly
+    -- Fix permissions explicitly
+    if username then
+        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
+    end
     cookie.fix_permissions(package_name, target_db_path)
 
-    ui.success("Cookie injected via Template Copy!")
+    ui.success("Cookie injected (direct method)!")
     return true, nil
 end
 
@@ -2266,7 +2295,7 @@ function cookie.injection_menu(cfg_data, packages)
                         end
                     end
                     
-                    local ok, inject_err = cookie.inject(target_pkg, cookie_input)
+                    local ok, inject_err = cookie.inject(target_pkg, cookie_input, valid and name_or_err or nil)
                     if ok then
                         config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
                         config.save(cfg_data)
