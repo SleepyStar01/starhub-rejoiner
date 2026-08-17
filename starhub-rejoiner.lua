@@ -2401,6 +2401,11 @@ function grid.apply(cfg_data, packages, rows, cols)
     end
     shell.sleep(1)
 
+    -- Force enable freeform support just in case the device has it disabled
+    shell.su("settings put global enable_freeform_support 1")
+    shell.su("settings put global force_resizable_activities 1")
+    shell.sleep(1)
+
     local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 60))
 
     for i, pkg in ipairs(packages) do
@@ -2426,7 +2431,10 @@ function grid.apply(cfg_data, packages, rows, cols)
                 local cmd = string.format("am start -p %s -a android.intent.action.VIEW --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
                                           shell.quote(pkg), 
                                           left, top, right, bottom, shell.quote(uri))
-                shell.su(cmd)
+                local code, out = shell.su(cmd)
+                if out and shell.trim(out) ~= "" then
+                    ui.warn("am output: " .. shell.trim(out))
+                end
                 
                 if i < #packages and stagger > 0 then
                     ui.info("Waiting " .. stagger .. "s before next launch...")
@@ -3412,16 +3420,11 @@ local POTATO_JSON = [[
   "DFIntTaskSchedulerTargetFps": "15",
   "FFlagDisablePostFx": "True",
   "FIntRenderShadowIntensity": "0",
-  "DFIntRenderShadowmapBias": "75",
   "DFIntTextureQualityOverride": "1",
   "DFFlagTextureQualityOverrideEnabled": "True",
   "DFIntDebugFRMQualityLevelOverride": "1",
   "FIntDebugForceMSAASamples": "0",
   "FIntFRMMaxGrassDistance": "0",
-  "FIntFRMMinGrassDistance": "0",
-  "DFIntTextureCompositorActiveJobs": "0",
-  "FFlagDebugForceFutureIsBrightPhase2": "False",
-  "FFlagDebugForceFutureIsBrightPhase3": "False",
   "FFlagGameBasicSettingsFramerateCap": "True"
 }
 ]]
@@ -3449,7 +3452,7 @@ function optimizer.apply(package_name, json_content)
         return false, "Failed to create directory: " .. tostring(out)
     end
     
-    -- Write file via temp to avoid selinux issues with echo directly to /data/data
+    -- write file via temp to avoid selinux issues with echo directly to /data/data
     local temp_file = "/data/local/tmp/ClientAppSettings_" .. package_name .. ".json"
     local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", shell.quote(temp_file), json_content)
     code, out = shell.su(echo_cmd)
@@ -3457,26 +3460,19 @@ function optimizer.apply(package_name, json_content)
         return false, "Failed to write temp file: " .. tostring(out)
     end
     
-    -- Some Roblox versions read from files/ClientSettings, others read from ClientSettings directly. We write to both.
-    local target_dir_2 = "/data/data/" .. package_name .. "/ClientSettings"
-    local target_file_2 = target_dir_2 .. "/ClientAppSettings.json"
-    shell.su("mkdir -p " .. shell.quote(target_dir_2))
-
-    -- Move to first location
+    -- move and chown
     shell.su("cp " .. shell.quote(temp_file) .. " " .. shell.quote(target_file))
-    -- Move to second location
-    shell.su("cp " .. shell.quote(temp_file) .. " " .. shell.quote(target_file_2))
     shell.su("rm -f " .. shell.quote(temp_file))
     
     -- chown to app uid
     local _, uid_output = shell.su("stat -c '%u' /data/data/" .. shell.quote(package_name) .. " 2>/dev/null")
     local uid = shell.trim(uid_output)
     if uid ~= "" and uid ~= "0" then
-        shell.su("chown -R " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir))
-        shell.su("chown -R " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir_2))
+        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir))
+        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_file))
     end
-    shell.su("chmod -R 777 " .. shell.quote(target_dir))
-    shell.su("chmod -R 777 " .. shell.quote(target_dir_2))
+    shell.su("chmod 777 " .. shell.quote(target_dir))
+    shell.su("chmod 666 " .. shell.quote(target_file))
     
     -- Also update shared_prefs so UI reflects the manual setting
     local prefs_file = "/data/data/" .. package_name .. "/shared_prefs/com.roblox.client_preferences.xml"
