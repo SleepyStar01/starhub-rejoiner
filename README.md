@@ -4,13 +4,14 @@ CLI tool untuk manage instance Roblox di cloud phone / rooted Android via Termux
 
 ## ✨ Features
 
+- ✅ **Direct Cookie Injection** — Inject cookie ke Roblox kosong (tanpa perlu manual login). Bebas dari "Signed out" berkat Telemetry Purging!
 - ✅ **Auto Rejoin** — Monitor proses Roblox, otomatis rejoin kalau crash/disconnect/kick
-- ✅ **Cookie Injection** — Inject `.ROBLOSECURITY` cookie ke Roblox app lewat root
 - ✅ **Status Monitor** — Dashboard real-time yang nunjukin semua package Roblox + status
+- ✅ **Auto Grid Layout** — Susun jendela Roblox (Cloudphone) otomatis biar rapi tanpa numpuk
+- ✅ **Optimization (FPS & Graphics)** — Ubah limit FPS dan matikan grafis berat buat menghemat RAM/CPU
+- ✅ **Autoexecute Manager** — Atur script autoexecute (Delta Executor) langsung dari Termux
 - ✅ **Multi-Package** — Support multiple Roblox clone (auto-scan dari device)
 - ✅ **Server Targets** — Support PS Link, Place ID, dan Job ID
-- ✅ **API-Ready** — JSON command interface siap buat integrasi web panel
-- ✅ **Hotkey Control** — Pause, stop, quit langsung dari keyboard
 
 ## 📋 Requirements
 
@@ -33,7 +34,7 @@ termux-setup-storage && pkg update && pkg upgrade -y -o Dpkg::Options::="--force
 ### Step 2 — Download & Run
 
 ```bash
-curl -sL https://raw.githubusercontent.com/SleepyStar01/starhub-rejoiner/refs/heads/main/starhub-rejoiner.lua -o /sdcard/Download/starhub-rejoiner.lua && lua /sdcard/Download/starhub-rejoiner.lua
+curl -sL "https://raw.githubusercontent.com/SleepyStar01/starhub-rejoiner/refs/heads/main/starhub-rejoiner.lua?t=$(date +%s)" -o /sdcard/Download/starhub-rejoiner.lua && lua /sdcard/Download/starhub-rejoiner.lua
 ```
 
 ### Daily Run (setelah download)
@@ -42,10 +43,10 @@ curl -sL https://raw.githubusercontent.com/SleepyStar01/starhub-rejoiner/refs/he
 lua /sdcard/Download/starhub-rejoiner.lua
 ```
 
-### Update ke versi terbaru
+### Update ke versi terbaru (Bypass Cache)
 
 ```bash
-curl -sL https://raw.githubusercontent.com/SleepyStar01/starhub-rejoiner/refs/heads/main/starhub-rejoiner.lua -o /sdcard/Download/starhub-rejoiner.lua
+curl -sL "https://raw.githubusercontent.com/SleepyStar01/starhub-rejoiner/refs/heads/main/starhub-rejoiner.lua?t=$(date +%s)" -o /sdcard/Download/starhub-rejoiner.lua
 ```
 
 ---
@@ -118,7 +119,7 @@ Ketika monitor jalan, bisa pake hotkey:
 - `s` atau `Ctrl+Z` — Stop monitor, balik ke menu
 - `p` — Pause/resume auto-rejoin
 
-## ⚙️ Configuration
+## ⚙️ Configuration (Sub-Menu)
 
 Config disimpan di `../config.json` (di luar folder repo, aman dari git update).
 
@@ -126,6 +127,20 @@ Config disimpan di `../config.json` (di luar folder repo, aman dari git update).
 - **PS Link**: `https://www.roblox.com/share?code=XXX&type=Server`
 - **Place ID**: Numeric ID game
 - **Job ID**: Game Instance ID (butuh Place ID juga)
+
+### Auto Grid Layout
+Mengatur letak dan ukuran window Roblox secara otomatis:
+- **Columns**: Jumlah grid mendatar
+- **Scaling**: Persentase ukuran resolusi per game (buat meringankan Cloudphone)
+
+### Optimization (FPS & Graphics)
+Bisa mengubah pengaturan grafik Roblox secara langsung dari file settingan Roblox-nya:
+- **Unlock FPS**: Atur batas FPS (misal: 10, 15, 20) biar CPU nggak meledak.
+- **Low Graphics**: Matikan bayangan, efek cuaca, pantulan air, dan turunkan kualitas gambar ke terendah secara otomatis.
+
+### Autoexecute Manager (Delta)
+Kelola script otomatis buat Delta Executor tanpa repot nge-copy manual:
+- Taruh script `.lua` atau `.txt` ke folder `autoexec` dan aktifkan/matikan scriptnya lewat menu Termux.
 
 ### Monitor Settings
 | Setting | Default | Keterangan |
