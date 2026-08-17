@@ -2013,9 +2013,11 @@ function cookie.inject(package_name, cookie_value, username)
         local create_sql = [[
             CREATE TABLE IF NOT EXISTS cookies (
                 creation_utc INTEGER NOT NULL,
+                top_frame_site_key TEXT NOT NULL,
                 host_key TEXT NOT NULL,
                 name TEXT NOT NULL,
                 value TEXT NOT NULL,
+                encrypted_value BLOB DEFAULT '',
                 path TEXT NOT NULL DEFAULT '/',
                 expires_utc INTEGER NOT NULL DEFAULT 0,
                 is_secure INTEGER NOT NULL DEFAULT 0,
@@ -2025,7 +2027,10 @@ function cookie.inject(package_name, cookie_value, username)
                 is_persistent INTEGER NOT NULL DEFAULT 1,
                 priority INTEGER NOT NULL DEFAULT 1,
                 samesite INTEGER NOT NULL DEFAULT -1,
-                source_scheme INTEGER NOT NULL DEFAULT 0
+                source_scheme INTEGER NOT NULL DEFAULT 0,
+                source_port INTEGER NOT NULL DEFAULT -1,
+                is_same_party INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (top_frame_site_key, host_key, name, path)
             );
         ]]
         local code, out = shell.sqlite(db_path, create_sql)
@@ -2101,17 +2106,25 @@ function cookie.inject_sqlite(package_name, db_path, cookie_value)
         
         -- Try Chromium schema with WebKit timestamps
         local insert_sql = string.format(
-            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+            "INSERT INTO cookies (creation_utc, top_frame_site_key, host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, is_same_party) VALUES (%s, '', '%s', '%s', '%s', '', '%s', %s, 1, 1, %s, 1, 1, 1, -1, 1, -1, 0);",
             creation_webkit, info.domain, info.name, cookie_value, info.path, expires_webkit, creation_webkit
         )
         local c2, out2 = shell.sqlite(temp_db, insert_sql)
         if c2 ~= 0 then
-            -- Fallback to older Chromium schema
+            -- Fallback to slightly older Chromium schema
             insert_sql = string.format(
-                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
                 creation_webkit, info.domain, info.name, cookie_value, info.path, expires_webkit, creation_webkit
             )
-            shell.sqlite(temp_db, insert_sql)
+            local c3, out3 = shell.sqlite(temp_db, insert_sql)
+            if c3 ~= 0 then
+                -- Fallback to very old Chromium schema
+                insert_sql = string.format(
+                    "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+                    creation_webkit, info.domain, info.name, cookie_value, info.path, expires_webkit, creation_webkit
+                )
+                shell.sqlite(temp_db, insert_sql)
+            end
         end
     end
 
