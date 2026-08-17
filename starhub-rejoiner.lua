@@ -2428,9 +2428,8 @@ function grid.apply(cfg_data, packages, rows, cols)
 
                 -- Launch activity in freeform mode with bounds
                 ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-                local cmd = string.format("am start -p %s -a android.intent.action.VIEW --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
-                                          shell.quote(pkg), 
-                                          left, top, right, bottom, shell.quote(uri))
+                local cmd = string.format("am start --windowingMode 5 --bounds %d,%d,%d,%d -a android.intent.action.VIEW -p %s -d %s",
+                                          left, top, right, bottom, shell.quote(pkg), shell.quote(uri))
                 local code, out = shell.su(cmd)
                 if out and shell.trim(out) ~= "" then
                     ui.warn("am output: " .. shell.trim(out))
