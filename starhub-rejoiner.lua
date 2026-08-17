@@ -3475,7 +3475,7 @@ function optimizer.apply(package_name, json_content)
         shell.su("sed -i '/<int name=\"graphicsQualityLevel\"/d' " .. shell.quote(prefs_file))
         -- Add new keys before </map>
         local insert_str = "<int name=\"GraphicsMode\" value=\"1\" />\\n    <int name=\"graphicsQualityLevel\" value=\"1\" />\\n</map>"
-        shell.su("sed -i 's/<\/map>/" .. insert_str .. "/' " .. shell.quote(prefs_file))
+        shell.su("sed -i 's#</map>#" .. insert_str .. "#' " .. shell.quote(prefs_file))
     end
     
     return true, nil
