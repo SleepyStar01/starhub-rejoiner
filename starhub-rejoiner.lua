@@ -1999,13 +1999,23 @@ function cookie.inject(package_name, cookie_value)
 
     -- Step 2: Find cookie database
     local db_path, db_type = cookie.find_db(package_name)
+    local has_session = false
 
     if db_path and db_type == "sqlite" then
+        -- Check if it actually has a session
+        local _, out = shell.sqlite(db_path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
+        if out and out:match("1") then
+            has_session = true
+        end
+    end
+
+    if has_session then
+        -- Target already has a logged-in session, just update the cookie directly
         return cookie.inject_sqlite(package_name, db_path, cookie_value)
     end
 
-    -- Target doesn't have a DB. Let's find a template from another package!
-    ui.warn("Cookie database not found, searching for a template from other clones...")
+    -- Target doesn't have a DB, OR it has a blank DB with no session. Let's find a template from another package!
+    ui.warn("Target is not logged in, searching for a template from other clones...")
     
     -- Needs to require device locally to avoid circular dependency
     local device = require("device")
