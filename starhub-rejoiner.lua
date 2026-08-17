@@ -3412,11 +3412,16 @@ local POTATO_JSON = [[
   "DFIntTaskSchedulerTargetFps": "15",
   "FFlagDisablePostFx": "True",
   "FIntRenderShadowIntensity": "0",
+  "DFIntRenderShadowmapBias": "75",
   "DFIntTextureQualityOverride": "1",
   "DFFlagTextureQualityOverrideEnabled": "True",
   "DFIntDebugFRMQualityLevelOverride": "1",
   "FIntDebugForceMSAASamples": "0",
   "FIntFRMMaxGrassDistance": "0",
+  "FIntFRMMinGrassDistance": "0",
+  "DFIntTextureCompositorActiveJobs": "0",
+  "FFlagDebugForceFutureIsBrightPhase2": "False",
+  "FFlagDebugForceFutureIsBrightPhase3": "False",
   "FFlagGameBasicSettingsFramerateCap": "True"
 }
 ]]
@@ -3444,7 +3449,7 @@ function optimizer.apply(package_name, json_content)
         return false, "Failed to create directory: " .. tostring(out)
     end
     
-    -- write file via temp to avoid selinux issues with echo directly to /data/data
+    -- Write file via temp to avoid selinux issues with echo directly to /data/data
     local temp_file = "/data/local/tmp/ClientAppSettings_" .. package_name .. ".json"
     local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", shell.quote(temp_file), json_content)
     code, out = shell.su(echo_cmd)
@@ -3452,19 +3457,26 @@ function optimizer.apply(package_name, json_content)
         return false, "Failed to write temp file: " .. tostring(out)
     end
     
-    -- move and chown
+    -- Some Roblox versions read from files/ClientSettings, others read from ClientSettings directly. We write to both.
+    local target_dir_2 = "/data/data/" .. package_name .. "/ClientSettings"
+    local target_file_2 = target_dir_2 .. "/ClientAppSettings.json"
+    shell.su("mkdir -p " .. shell.quote(target_dir_2))
+
+    -- Move to first location
     shell.su("cp " .. shell.quote(temp_file) .. " " .. shell.quote(target_file))
+    -- Move to second location
+    shell.su("cp " .. shell.quote(temp_file) .. " " .. shell.quote(target_file_2))
     shell.su("rm -f " .. shell.quote(temp_file))
     
     -- chown to app uid
     local _, uid_output = shell.su("stat -c '%u' /data/data/" .. shell.quote(package_name) .. " 2>/dev/null")
     local uid = shell.trim(uid_output)
     if uid ~= "" and uid ~= "0" then
-        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir))
-        shell.su("chown " .. uid .. ":" .. uid .. " " .. shell.quote(target_file))
+        shell.su("chown -R " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir))
+        shell.su("chown -R " .. uid .. ":" .. uid .. " " .. shell.quote(target_dir_2))
     end
-    shell.su("chmod 777 " .. shell.quote(target_dir))
-    shell.su("chmod 666 " .. shell.quote(target_file))
+    shell.su("chmod -R 777 " .. shell.quote(target_dir))
+    shell.su("chmod -R 777 " .. shell.quote(target_dir_2))
     
     -- Also update shared_prefs so UI reflects the manual setting
     local prefs_file = "/data/data/" .. package_name .. "/shared_prefs/com.roblox.client_preferences.xml"
