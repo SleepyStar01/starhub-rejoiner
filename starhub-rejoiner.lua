@@ -1998,16 +1998,32 @@ function cookie.inject(package_name, cookie_value, username)
     shell.am_force_stop(package_name)
     shell.sleep(2)
 
-    -- Step 2: Write prefs.xml to bypass Native UI and clear telemetry
+    -- Step 2: Ensure Cookies DB exists (Generate via WebView if missing)
+    local db_path, db_type = cookie.find_db(package_name)
+    
+    if not db_path then
+        ui.info("Cookie database not found. Generating schema via WebView...")
+        -- Launch app to generate WebView folders and Cookies DB automatically!
+        shell.su("am start -n " .. shell.quote(package_name .. "/com.roblox.client.Activity"))
+        ui.info("Waiting for WebView initialization (7s)...")
+        shell.sleep(7)
+        shell.am_force_stop(package_name)
+        shell.sleep(2)
+        
+        -- Try finding the DB again
+        db_path, db_type = cookie.find_db(package_name)
+        if not db_path then
+            return false, "Failed to generate Cookies database automatically. Make sure the app is installed properly."
+        end
+    end
+
+    -- Step 3: Write prefs.xml to bypass Native UI
     if username then
         ui.info("Writing prefs.xml for " .. username .. "...")
         local target_pkg_dir = "/data/data/" .. package_name
         
-        -- Create directories
+        -- Create directory if missing
         shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/shared_prefs"))
-        
-        -- Delete existing shared_prefs to clear telemetry and prevent "Signed out" mismatch
-        shell.su("rm -f " .. shell.quote(target_pkg_dir .. "/shared_prefs/*"))
         
         -- Write minimal prefs.xml using echo (safe via su)
         local prefs_content = string.format([[
@@ -2027,50 +2043,22 @@ function cookie.inject(package_name, cookie_value, username)
         end
     end
 
-    -- Step 3: Find or Create SQLite database
-    local db_path, db_type = cookie.find_db(package_name)
-
-    if db_path and db_type == "sqlite" then
-        ui.info("Updating existing Cookies database...")
-        local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
-        
-        -- Fix permissions for prefs.xml if we created it
-        if username then
-            local pkg_info = shell.get_package_info(package_name)
-            if pkg_info and pkg_info.uid then
-                local uid = pkg_info.uid
-                shell.su("chown " .. uid .. ":" .. uid .. " /data/data/" .. package_name .. "/shared_prefs/prefs.xml")
-                shell.su("chmod 600 /data/data/" .. package_name .. "/shared_prefs/prefs.xml")
-            end
-        end
-        return result, err_msg
-    end
-
-    ui.info("Cookie database not found. Generating schema via WebView...")
+    -- Step 4: Inject SQLite database
+    ui.info("Injecting cookie into database...")
+    local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
     
-    -- Trick to generate the perfect schema: Launch the app so Chromium creates the Cookies DB automatically!
-    shell.su("am start -n " .. shell.quote(package_name .. "/com.roblox.client.Activity"))
-    ui.info("Waiting for WebView initialization (5s)...")
-    shell.sleep(5)
-    shell.am_force_stop(package_name)
-    shell.sleep(1)
-    
-    -- Try finding the DB again
-    db_path, db_type = cookie.find_db(package_name)
-    if db_path and db_type == "sqlite" then
-        ui.info("Database generated! Injecting cookie...")
-        local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
-        
-        if username then
-            cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
-        end
-        cookie.fix_permissions(package_name, db_path)
-        
-        ui.success("Cookie injected (auto-schema method)!")
-        return result, err_msg
+    -- Step 5: Fix permissions
+    if username then
+        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
     end
-
-    return false, "Failed to generate Cookies database automatically."
+    cookie.fix_permissions(package_name, db_path)
+    
+    if result then
+        ui.success("Cookie injected successfully!")
+        return true, nil
+    else
+        return false, err_msg
+    end
 end
 
 --- Inject cookie via SQLite database
