@@ -2423,8 +2423,8 @@ function grid.apply(cfg_data, packages, rows, cols)
 
                 -- Launch activity in freeform mode with bounds
                 ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-                local cmd = string.format("am start -n %s -a android.intent.action.VIEW --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
-                                          shell.quote(pkg .. "/com.roblox.client.Activity"), 
+                local cmd = string.format("am start -p %s -a android.intent.action.VIEW --windowingMode 5 --bounds %d,%d,%d,%d -d %s",
+                                          shell.quote(pkg), 
                                           left, top, right, bottom, shell.quote(uri))
                 shell.su(cmd)
                 
@@ -3465,6 +3465,18 @@ function optimizer.apply(package_name, json_content)
     end
     shell.su("chmod 777 " .. shell.quote(target_dir))
     shell.su("chmod 666 " .. shell.quote(target_file))
+    
+    -- Also update shared_prefs so UI reflects the manual setting
+    local prefs_file = "/data/data/" .. package_name .. "/shared_prefs/com.roblox.client_preferences.xml"
+    local check_prefs = shell.su("test -f " .. shell.quote(prefs_file) .. " && echo ok")
+    if shell.trim(check_prefs) == "ok" then
+        -- Remove existing keys
+        shell.su("sed -i '/<int name=\"GraphicsMode\"/d' " .. shell.quote(prefs_file))
+        shell.su("sed -i '/<int name=\"graphicsQualityLevel\"/d' " .. shell.quote(prefs_file))
+        -- Add new keys before </map>
+        local insert_str = "<int name=\"GraphicsMode\" value=\"1\" />\\n    <int name=\"graphicsQualityLevel\" value=\"1\" />\\n</map>"
+        shell.su("sed -i 's/<\/map>/" .. insert_str .. "/' " .. shell.quote(prefs_file))
+    end
     
     return true, nil
 end
