@@ -121,70 +121,47 @@ function cookie.inject(package_name, cookie_value, username)
     shell.am_force_stop(package_name)
     shell.sleep(2)
 
-    -- Step 2: Check if target already has a logged-in session
-    local db_path, db_type = cookie.find_db(package_name)
-    local has_session = false
-
-    if db_path and db_type == "sqlite" then
-        local _, out = shell.sqlite(db_path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
-        if out and out:match("1") then
-            has_session = true
-        end
-    end
-
     local target_pkg_dir = "/data/data/" .. package_name
 
-    if not has_session then
-        -- Target doesn't have a session. We MUST use a template.
-        -- Reason: Roblox Native UI uses Android Keystore hardware encryption for the session token.
-        -- We cannot generate this from scratch. We must copy an existing valid token from another clone.
-        ui.warn("Target is not logged in natively.")
-        ui.info("Searching for a template from other clones...")
+    -- Step 2: Create Webview Directory Structure
+    local webview_dir = target_pkg_dir .. "/app_webview/Default"
+    local db_path = webview_dir .. "/Cookies"
+    
+    local check_db = shell.su("test -e " .. shell.quote(db_path) .. " && echo ok")
+    if shell.trim(check_db) ~= "ok" then
+        ui.info("Creating fresh cookie database structure...")
+        shell.su("mkdir -p " .. shell.quote(webview_dir))
         
-        local device = require("device")
-        local packages = device.scan_packages()
-        local template_pkg_dir = nil
-        
-        for _, pkg in ipairs(packages) do
-            if pkg ~= package_name then
-                local path, t = cookie.find_db(pkg)
-                if path and t == "sqlite" then
-                    local _, out = shell.sqlite(path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
-                    if out and out:match("1") then
-                        template_pkg_dir = "/data/data/" .. pkg
-                        break
-                    end
-                end
-            end
+        -- Create the schema directly using SQLite
+        local create_sql = [[
+            CREATE TABLE IF NOT EXISTS cookies (
+                creation_utc INTEGER NOT NULL,
+                host_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                path TEXT NOT NULL DEFAULT '/',
+                expires_utc INTEGER NOT NULL DEFAULT 0,
+                is_secure INTEGER NOT NULL DEFAULT 0,
+                is_httponly INTEGER NOT NULL DEFAULT 0,
+                last_access_utc INTEGER NOT NULL DEFAULT 0,
+                has_expires INTEGER NOT NULL DEFAULT 1,
+                is_persistent INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 1,
+                samesite INTEGER NOT NULL DEFAULT -1,
+                source_scheme INTEGER NOT NULL DEFAULT 0
+            );
+        ]]
+        local code, out = shell.sqlite(db_path, create_sql)
+        if code ~= 0 then
+            return false, "Failed to create DB schema: " .. tostring(out)
         end
-
-        if not template_pkg_dir then
-            return false, "Gagal menemukan template database!\n\n💡 KARENA KEAMANAN ROBLOX (KEYSTORE), KAMU WAJIB:\n1. Buka salah satu clone Roblox (bebas yang mana aja)\n2. Login manual SEKALI AJA pakai akun apa pun\n3. Setelah berhasil login, tutup gamenya\n4. Inject ulang disini, dan clone lain bakal otomatis ngikut (copy-paste template) selamanya!"
-        end
-
-        ui.info("Found valid template: " .. template_pkg_dir)
-
-        -- Ensure target directories exist
-        shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/shared_prefs"))
-        shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/app_webview"))
-        
-        -- Copy contents (preserves Delta Executor files if they exist in target)
-        ui.info("Copying session template to target...")
-        shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/shared_prefs/*") .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/") .. " 2>/dev/null")
-        shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/app_webview/*") .. " " .. shell.quote(target_pkg_dir .. "/app_webview/") .. " 2>/dev/null")
-        
-        -- Update db_path to the newly copied DB
-        local new_db_path = target_pkg_dir .. "/app_webview/Default/Cookies"
-        local check_db = shell.su("test -e " .. shell.quote(new_db_path) .. " && echo ok")
-        if shell.trim(check_db) ~= "ok" then
-            new_db_path = target_pkg_dir .. "/app_webview/Cookies"
-        end
-        db_path = new_db_path
     end
 
     -- Step 3: Write prefs.xml to update the CLI status table username
     if username then
-        ui.info("Updating CLI status table username...")
+        ui.info("Writing prefs.xml for " .. username .. "...")
+        shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/shared_prefs"))
+        
         local prefs_content = string.format([[
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -200,7 +177,7 @@ function cookie.inject(package_name, cookie_value, username)
         end
     end
 
-    -- Step 4: Inject SQLite database with the NEW cookie
+    -- Step 4: Inject SQLite database with the NEW cookie (uses WebKit timestamps)
     ui.info("Injecting cookie into database...")
     local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
     
@@ -298,103 +275,166 @@ end
 ---@param packages table Available packages
 ---@return table cfg_data (modified)
 function cookie.injection_menu(cfg_data, packages)
-    ui.header("Cookie Injection")
+    while true do
+        ui.header("Cookie Injection")
 
-    if #packages == 0 then
-        ui.error("No Roblox packages found on device!")
-        ui.info("Press Enter to go back...")
-        io.read("*l")
-        return cfg_data
-    end
+        if #packages == 0 then
+            ui.error("No Roblox packages found on device!")
+            ui.info("Press Enter to go back...")
+            io.read("*l")
+            return cfg_data
+        end
 
-    -- Show available packages
-    ui.info("Available packages:")
-    local menu_items = {}
-    for i, pkg in ipairs(packages) do
-        local existing = config.get_cookie(cfg_data, pkg)
-        local status = existing and (ui.c("has cookie", ui.color.green)) or (ui.c("no cookie", ui.color.gray))
-        menu_items[#menu_items + 1] = {
-            key = tostring(i),
-            label = pkg .. "  " .. status,
-        }
-    end
-    menu_items[#menu_items + 1] = { separator = true }
-    menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
-
-    local choice = ui.menu(menu_items, "Select package")
-    local idx = tonumber(choice)
-
-    if not idx or idx == 0 or idx > #packages then
-        return cfg_data
-    end
-
-    local target_pkg = packages[idx]
-    print("")
-    ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
-
-    -- Ask for action
-    local action = ui.menu({
-        { key = "1", label = "Inject new cookie" },
-        { key = "2", label = "View current cookie" },
-        { key = "3", label = "Remove cookie" },
-        { key = "0", label = "Back", color = ui.color.gray },
-    }, "Select action")
-
-    if action == "1" then
-        -- Inject new cookie
-        print("")
-        ui.info("Paste your .ROBLOSECURITY cookie below:")
-        ui.dim("(The cookie starting with _|WARNING: or just the token)")
-        print("")
-        io.write(ui.color.cyan .. "> " .. ui.color.reset)
-        io.flush()
-        local cookie_input = io.read("*l")
-
-        if not cookie_input or cookie_input == "" then
-            ui.warn("No cookie provided")
-        else
-            local ok, inject_err = cookie.inject(target_pkg, cookie_input)
-            if ok then
-                -- Save to config
-                config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
-                config.save(cfg_data)
-                ui.success("Cookie saved to config and injected!")
-            else
-                ui.error("Injection failed: " .. tostring(inject_err))
-                -- Still save to config for later use
-                if ui.confirm("Save cookie to config anyway?", true) then
-                    config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+        -- Show available packages
+        ui.info("Available packages:")
+        local masked_display = config.get(cfg_data, "cookie.masked_display", true)
+        local menu_items = {}
+        for i, pkg in ipairs(packages) do
+            local existing = config.get_cookie(cfg_data, pkg)
+            if not existing then
+                existing = cookie.extract(pkg)
+                if existing then
+                    config.set_cookie(cfg_data, pkg, existing)
                     config.save(cfg_data)
-                    ui.info("Cookie saved to config")
                 end
             end
+            local status
+            if existing then
+                local disp = masked_display and cookie.mask(existing) or existing
+                status = ui.c(disp, ui.color.green)
+            else
+                status = ui.c("no cookie", ui.color.gray)
+            end
+            menu_items[#menu_items + 1] = {
+                key = tostring(i),
+                label = pkg .. "  " .. status,
+            }
+        end
+        menu_items[#menu_items + 1] = { separator = true }
+        menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
+
+        local choice = ui.menu(menu_items, "Select package")
+        local idx = tonumber(choice)
+
+        if not idx or idx == 0 or idx > #packages then
+            return cfg_data
         end
 
-    elseif action == "2" then
-        -- View current cookie
-        local existing = config.get_cookie(cfg_data, target_pkg)
-        if existing then
+        local target_pkg = packages[idx]
+
+        while true do
+            local existing = config.get_cookie(cfg_data, target_pkg)
+            if not existing then
+                existing = cookie.extract(target_pkg)
+                if existing then
+                    -- Save extracted cookie to config
+                    config.set_cookie(cfg_data, target_pkg, existing)
+                    config.save(cfg_data)
+                end
+            end
+            
             print("")
-            ui.info("Cookie for " .. target_pkg .. ":")
-            ui.kv("Masked", cookie.mask(existing))
-            ui.kv("Length", tostring(#existing) .. " chars")
-        else
-            ui.warn("No cookie stored for " .. target_pkg)
-        end
+            ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
+            if existing then
+                local disp = masked_display and cookie.mask(existing) or existing
+                ui.kv("Current Cookie", disp)
+            else
+                ui.kv("Current Cookie", ui.c("No cookie stored", ui.color.gray))
+            end
+            print("")
 
-    elseif action == "3" then
-        -- Remove cookie
-        if ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
-            config.set_cookie(cfg_data, target_pkg, nil)
-            config.save(cfg_data)
-            ui.success("Cookie removed")
+            -- Ask for action
+            local action = ui.menu({
+                { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
+                { key = "2", label = "Verify a cookie manually (Roblox API)" },
+                { key = "3", label = "Remove cookie", color = ui.color.red },
+                { key = "0", label = "Back", color = ui.color.gray },
+            }, "Select action")
+
+            if not action or action == "0" then
+                break -- Go back to package list
+            end
+
+            if action == "1" then
+                -- Inject new cookie
+                print("")
+                ui.info("Paste your .ROBLOSECURITY cookie below:")
+                ui.dim("(The cookie starting with _|WARNING: or just the token)")
+                print("")
+                io.write(ui.color.cyan .. "> " .. ui.color.reset)
+                io.flush()
+                local cookie_input = io.read("*l")
+
+                if not cookie_input or cookie_input == "" then
+                    ui.warn("No cookie provided")
+                else
+                    ui.info("Verifying cookie before injection...")
+                    local valid, name_or_err = shell.verify_cookie(cookie.clean(cookie_input))
+                    if valid then
+                        ui.success("Cookie is valid! Account: " .. ui.c(name_or_err, ui.color.green))
+                    else
+                        ui.warn("Cookie verification failed: " .. name_or_err)
+                        if not ui.confirm("Do you still want to inject this cookie?", false) then
+                            -- Skip injection
+                            goto continue_action
+                        end
+                    end
+                    
+                    local ok, inject_err = cookie.inject(target_pkg, cookie_input, valid and name_or_err or nil)
+                    if ok then
+                        config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                        config.save(cfg_data)
+                        ui.success("Cookie saved to config and injected!")
+                    else
+                        ui.error("Injection failed: " .. tostring(inject_err))
+                        if ui.confirm("Save cookie to config anyway?", true) then
+                            config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                            config.save(cfg_data)
+                            ui.info("Cookie saved to config")
+                        end
+                    end
+                end
+
+            elseif action == "2" then
+                print("")
+                ui.info("Paste the cookie you want to verify:")
+                io.write(ui.color.cyan .. "> " .. ui.color.reset)
+                io.flush()
+                local test_cookie = io.read("*l")
+                
+                if test_cookie and test_cookie ~= "" then
+                    ui.info("Verifying cookie with Roblox API...")
+                    local valid, name_or_err = shell.verify_cookie(cookie.clean(test_cookie))
+                    if valid then
+                        ui.success("Cookie is VALID!")
+                        ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
+                    else
+                        ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
+                    end
+                else
+                    ui.warn("No cookie provided")
+                end
+
+            elseif action == "3" then
+                if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
+                    config.set_cookie(cfg_data, target_pkg, nil)
+                    config.save(cfg_data)
+                    -- Also wipe it from the app data
+                    ui.info("Wiping cookie from app data...")
+                    shell.am_force_stop(target_pkg)
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Default/Cookies")
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Cookies")
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/shared_prefs/prefs.xml")
+                    ui.success("Cookie removed completely!")
+                end
+            end
+
+            ::continue_action::
+            print("")
+            ui.info("Press Enter to continue...")
+            io.read("*l")
         end
     end
-
-    print("")
-    ui.info("Press Enter to continue...")
-    io.read("*l")
-    return cfg_data
 end
 
 return cookie
