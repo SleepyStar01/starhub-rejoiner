@@ -3914,6 +3914,38 @@ local function config_menu(cfg_data)
             end
             shell.sleep(1)
 
+        elseif choice == "99" then
+            local packages = device.find_roblox_packages(cfg_data)
+            ui.clear()
+            ui.header("Pebletz Spy Scanner")
+            print("Pilih paket yang baru saja di-inject oleh Pebletz:\n")
+            for i, pkg in ipairs(packages) do
+                print(string.format("  %d. %s", i, pkg))
+            end
+            io.write("\n? Nomor paket: ")
+            local num = tonumber(io.read() or "")
+            if num and packages[num] then
+                local pkg = packages[num]
+                print("\n[*] Men-scan file yang berubah dalam 15 menit terakhir di " .. pkg .. "...")
+                local _, out = shell.su("find /data/data/" .. pkg .. " -mmin -15 -type f -exec ls -la {} \\;")
+                print("\n--- HASIL SCAN ---")
+                print(out or "Tidak ada file yang berubah.")
+                
+                print("\n[*] Mengecek file shared_prefs...")
+                local _, out2 = shell.su("ls -la /data/data/" .. pkg .. "/shared_prefs/")
+                print("\n--- ISI SHARED PREFS ---")
+                print(out2 or "Kosong")
+
+                print("\n[*] Mengecek isi webview...")
+                local _, out3 = shell.su("ls -la /data/data/" .. pkg .. "/app_webview/")
+                print("\n--- ISI APP_WEBVIEW ---")
+                print(out3 or "Kosong")
+            else
+                ui.warn("Pilihan tidak valid")
+            end
+            ui.info("\nPress Enter to continue...")
+            io.read("*l")
+
         elseif choice == "0" or choice == nil then
             break
         end
