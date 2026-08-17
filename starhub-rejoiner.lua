@@ -3411,12 +3411,12 @@ local POTATO_JSON = [[
 {
   "DFIntTaskSchedulerTargetFps": "15",
   "FFlagDisablePostFx": "True",
-  "FFlagDebugGraphicsDisableCSGv2": "True",
-  "FFlagDebugGraphicsPreferD3D11": "False",
   "FIntRenderShadowIntensity": "0",
-  "FFlagDebugGraphicsPreferOpenGL": "True",
-  "DFIntMaxFrameBufferSize": "4",
-  "FFlagFastAnimBypassTimeCheck": "True",
+  "DFIntTextureQualityOverride": "1",
+  "DFFlagTextureQualityOverrideEnabled": "True",
+  "DFIntDebugFRMQualityLevelOverride": "1",
+  "FIntDebugForceMSAASamples": "0",
+  "FIntFRMMaxGrassDistance": "0",
   "FFlagGameBasicSettingsFramerateCap": "True"
 }
 ]]
