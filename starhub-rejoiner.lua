@@ -3956,33 +3956,72 @@ local function config_menu(cfg_data)
         elseif choice == "99" then
             local packages = device.scan_packages(config.get(cfg_data, "packages.prefix", "roblox"))
             shell.clear()
-            ui.header("Pebletz Spy Scanner")
-            print("Pilih paket yang baru saja di-inject oleh Pebletz:\n")
-            for i, pkg in ipairs(packages) do
-                print(string.format("  %d. %s", i, pkg))
-            end
-            io.write("\n? Nomor paket: ")
-            local num = tonumber(io.read() or "")
-            if num and packages[num] then
-                local pkg = packages[num]
-                print("\n[*] Men-scan file yang berubah dalam 15 menit terakhir di " .. pkg .. "...")
-                local _, out = shell.su("find /data/data/" .. pkg .. " -mmin -15 -type f -exec ls -la {} \\;")
-                print("\n--- HASIL SCAN ---")
-                print(out or "Tidak ada file yang berubah.")
+            ui.header("Pebletz Diagnostic & Spy Tools")
+            
+            local spy_choice = ui.menu({
+                { key = "1", label = "Spy File System (Cookies & Prefs)" },
+                { key = "2", label = "Spy Database Schema" },
+                { key = "3", label = "Spy Logcat (Am Start / Intents)" },
+                { key = "0", label = "Back" }
+            }, "Select Diagnostic Tool")
+            
+            if spy_choice == "1" then
+                print("Pilih paket yang baru saja di-inject oleh Pebletz:\n")
+                for i, pkg in ipairs(packages) do
+                    print(string.format("  %d. %s", i, pkg))
+                end
+                io.write("\n? Nomor paket: ")
+                local num = tonumber(io.read() or "")
+                if num and packages[num] then
+                    local pkg = packages[num]
+                    print("\n[*] Men-scan file yang berubah dalam 15 menit terakhir di " .. pkg .. "...")
+                    local _, out = shell.su("find /data/data/" .. pkg .. " -mmin -15 -type f -exec ls -la {} \\;")
+                    print("\n--- HASIL SCAN ---")
+                    print(out or "Tidak ada file yang berubah.")
+                    
+                    print("\n[*] Mengecek file shared_prefs...")
+                    local _, out2 = shell.su("ls -la /data/data/" .. pkg .. "/shared_prefs/")
+                    print("\n--- ISI SHARED PREFS ---")
+                    print(out2 or "Kosong")
+    
+                    print("\n[*] Mengecek isi webview...")
+                    local _, out3 = shell.su("ls -la /data/data/" .. pkg .. "/app_webview/")
+                    print("\n--- ISI APP_WEBVIEW ---")
+                    print(out3 or "Kosong")
+                else
+                    ui.warn("Pilihan tidak valid")
+                end
                 
-                print("\n[*] Mengecek file shared_prefs...")
-                local _, out2 = shell.su("ls -la /data/data/" .. pkg .. "/shared_prefs/")
-                print("\n--- ISI SHARED PREFS ---")
-                print(out2 or "Kosong")
-
-                print("\n[*] Mengecek isi webview...")
-                local _, out3 = shell.su("ls -la /data/data/" .. pkg .. "/app_webview/")
-                print("\n--- ISI APP_WEBVIEW ---")
-                print(out3 or "Kosong")
-            else
-                ui.warn("Pilihan tidak valid")
+            elseif spy_choice == "2" then
+                local c_pkg = ui.input("Enter package to dump (e.g. com.roblox.clienx)", "com.roblox.clienx")
+                print("")
+                ui.info("Dumping schema for " .. c_pkg .. "...")
+                local path = "/data/data/" .. c_pkg .. "/app_webview/Default/Cookies"
+                local code, out = shell.sqlite(path, ".schema cookies")
+                print(out)
+                print("")
+                ui.info("Dumping row data (excluding encrypted values)...")
+                local code2, out2 = shell.sqlite(path, "SELECT creation_utc, host_key, name, path, expires_utc, has_expires FROM cookies;")
+                print(out2)
+                
+            elseif spy_choice == "3" then
+                ui.info("Membersihkan Logcat...")
+                shell.su("logcat -c")
+                ui.info("Sekarang, silakan pencet tombol AUTO GRID atau LAUNCH di Pebletz Web!")
+                ui.info("Merekam log selama 15 detik...")
+                shell.sleep(15)
+                ui.info("Menyaring hasil Logcat...")
+                local _, out = shell.su("logcat -d | grep -iE 'ActivityManager.*(START|resize|bounds|roblox)' | tail -n 30")
+                print("\n--- HASIL LOGCAT (ActivityManager) ---")
+                print(out)
+                
+                print("\n--- HASIL PROSES ---")
+                local _, p_out = shell.su("ps -A -o pid,args | grep -iE '(am |roblox)' | grep -v grep")
+                print(p_out)
             end
-            ui.info("\nPress Enter to continue...")
+
+            print("")
+            ui.info("Press Enter to continue...")
             io.read("*l")
 
         elseif choice == "0" or choice == nil then
