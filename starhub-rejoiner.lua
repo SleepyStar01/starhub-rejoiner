@@ -2035,7 +2035,7 @@ function cookie.inject(package_name, cookie_value, username)
 ]], username, username)
         
         local temp_xml = "/data/local/tmp/prefs_" .. package_name .. ".xml"
-        local prefs_filename = package_name .. "_preferences.xml"
+        local prefs_filename = "prefs.xml"
         local code_echo = shell.su("echo " .. shell.quote(prefs_content) .. " > " .. temp_xml)
         if code_echo == 0 then
             shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/" .. prefs_filename))
@@ -2050,7 +2050,7 @@ function cookie.inject(package_name, cookie_value, username)
     
     -- Step 5: Fix permissions
     if username then
-        local prefs_filename = package_name .. "_preferences.xml"
+        local prefs_filename = "prefs.xml"
         cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/" .. prefs_filename)
     end
     cookie.fix_permissions(package_name, db_path)
