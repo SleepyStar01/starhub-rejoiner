@@ -3868,7 +3868,7 @@ local function config_menu(cfg_data)
 
         elseif choice == "99" then
             local packages = device.scan_packages(config.get(cfg_data, "packages.prefix", "roblox"))
-            ui.clear()
+            shell.clear()
             ui.header("Pebletz Spy Scanner")
             print("Pilih paket yang baru saja di-inject oleh Pebletz:\n")
             for i, pkg in ipairs(packages) do
