@@ -2004,9 +2004,9 @@ function cookie.inject(package_name, cookie_value, username)
     if not db_path then
         ui.info("Cookie database not found. Generating schema via WebView...")
         -- Launch app to generate WebView folders and Cookies DB automatically!
-        shell.su("am start -n " .. shell.quote(package_name .. "/com.roblox.client.Activity"))
-        ui.info("Waiting for WebView initialization (7s)...")
-        shell.sleep(7)
+        shell.su("monkey -p " .. shell.quote(package_name) .. " -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1")
+        ui.info("Waiting for WebView initialization (10s)...")
+        shell.sleep(10)
         shell.am_force_stop(package_name)
         shell.sleep(2)
         
@@ -2366,7 +2366,13 @@ function cookie.injection_menu(cfg_data, packages)
                 if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
                     config.set_cookie(cfg_data, target_pkg, nil)
                     config.save(cfg_data)
-                    ui.success("Cookie removed")
+                    -- Also wipe it from the app data
+                    ui.info("Wiping cookie from app data...")
+                    shell.am_force_stop(target_pkg)
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Default/Cookies")
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Cookies")
+                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/shared_prefs/prefs.xml")
+                    ui.success("Cookie removed completely!")
                 end
             end
 
