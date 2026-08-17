@@ -27,7 +27,7 @@ CLI tool untuk manage instance Roblox di cloud phone / rooted Android via Termux
 ### Step 1 — Install dependencies (sekali aja)
 
 ```bash
-termux-setup-storage && pkg update && pkg install lua54 curl sqlite -y
+termux-setup-storage && pkg update && pkg upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" && pkg install lua54 curl sqlite -y
 ```
 
 ### Step 2 — Download & Run
