@@ -1962,6 +1962,21 @@ function cookie.find_db(package_name)
     return nil, "none"
 end
 
+--- Extract cookie directly from Roblox WebView SQLite database
+---@param package_name string
+---@return string|nil cookie_value
+function cookie.extract(package_name)
+    local db_path, db_type = cookie.find_db(package_name)
+    if db_type == "sqlite" and db_path then
+        local sql = string.format("SELECT value FROM %s WHERE name='%s' LIMIT 1;", COOKIE_DB_INFO.table_name, COOKIE_DB_INFO.name)
+        local code, output = shell.sqlite(db_path, sql)
+        if code == 0 and output and output ~= "" then
+            return shell.trim(output)
+        end
+    end
+    return nil
+end
+
 --- Inject a cookie into a Roblox package's data
 ---@param package_name string
 ---@param cookie_value string The .ROBLOSECURITY value
