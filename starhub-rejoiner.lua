@@ -1962,22 +1962,7 @@ function cookie.find_db(package_name)
     return nil, "none"
 end
 
---- Extract cookie directly from Roblox WebView SQLite database
----@param package_name string
----@return string|nil cookie_value
-function cookie.extract(package_name)
-    local db_path, db_type = cookie.find_db(package_name)
-    if db_type == "sqlite" and db_path then
-        local sql = string.format("SELECT value FROM %s WHERE name='%s' LIMIT 1;", COOKIE_DB_INFO.table_name, COOKIE_DB_INFO.name)
-        local code, output = shell.sqlite(db_path, sql)
-        if code == 0 and output and output ~= "" then
-            return shell.trim(output)
-        end
-    end
-    return nil
-end
-
------ Inject a cookie into a Roblox package's data
+--- Inject a cookie into a Roblox package's data
 ---@param package_name string
 ---@param cookie_value string The .ROBLOSECURITY value
 ---@param username string|nil The username of the account, used to bypass Native UI
@@ -1998,34 +1983,70 @@ function cookie.inject(package_name, cookie_value, username)
     shell.am_force_stop(package_name)
     shell.sleep(2)
 
-    -- Step 2: Ensure Cookies DB exists (Generate via WebView if missing)
+    -- Step 2: Check if target already has a logged-in session
     local db_path, db_type = cookie.find_db(package_name)
-    
-    if not db_path then
-        ui.info("Cookie database not found. Generating schema via WebView...")
-        -- Launch app to generate WebView folders and Cookies DB automatically!
-        shell.su("monkey -p " .. shell.quote(package_name) .. " -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1")
-        ui.info("Waiting for WebView initialization (10s)...")
-        shell.sleep(10)
-        shell.am_force_stop(package_name)
-        shell.sleep(2)
-        
-        -- Try finding the DB again
-        db_path, db_type = cookie.find_db(package_name)
-        if not db_path then
-            return false, "Failed to generate Cookies database automatically. Make sure the app is installed properly."
+    local has_session = false
+
+    if db_path and db_type == "sqlite" then
+        local _, out = shell.sqlite(db_path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
+        if out and out:match("1") then
+            has_session = true
         end
     end
 
-    -- Step 3: Write prefs.xml to bypass Native UI
-    if username then
-        ui.info("Writing prefs.xml for " .. username .. "...")
-        local target_pkg_dir = "/data/data/" .. package_name
+    local target_pkg_dir = "/data/data/" .. package_name
+
+    if not has_session then
+        -- Target doesn't have a session. We MUST use a template.
+        -- Reason: Roblox Native UI uses Android Keystore hardware encryption for the session token.
+        -- We cannot generate this from scratch. We must copy an existing valid token from another clone.
+        ui.warn("Target is not logged in natively.")
+        ui.info("Searching for a template from other clones...")
         
-        -- Create directory if missing
+        local device = require("device")
+        local packages = device.scan_packages()
+        local template_pkg_dir = nil
+        
+        for _, pkg in ipairs(packages) do
+            if pkg ~= package_name then
+                local path, t = cookie.find_db(pkg)
+                if path and t == "sqlite" then
+                    local _, out = shell.sqlite(path, "SELECT count(*) FROM cookies WHERE name='.ROBLOSECURITY';")
+                    if out and out:match("1") then
+                        template_pkg_dir = "/data/data/" .. pkg
+                        break
+                    end
+                end
+            end
+        end
+
+        if not template_pkg_dir then
+            return false, "Gagal menemukan template database!\n\n💡 KARENA KEAMANAN ROBLOX (KEYSTORE), KAMU WAJIB:\n1. Buka salah satu clone Roblox (bebas yang mana aja)\n2. Login manual SEKALI AJA pakai akun apa pun\n3. Setelah berhasil login, tutup gamenya\n4. Inject ulang disini, dan clone lain bakal otomatis ngikut (copy-paste template) selamanya!"
+        end
+
+        ui.info("Found valid template: " .. template_pkg_dir)
+
+        -- Ensure target directories exist
         shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/shared_prefs"))
+        shell.su("mkdir -p " .. shell.quote(target_pkg_dir .. "/app_webview"))
         
-        -- Write minimal prefs.xml using echo (safe via su)
+        -- Copy contents (preserves Delta Executor files if they exist in target)
+        ui.info("Copying session template to target...")
+        shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/shared_prefs/*") .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/") .. " 2>/dev/null")
+        shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/app_webview/*") .. " " .. shell.quote(target_pkg_dir .. "/app_webview/") .. " 2>/dev/null")
+        
+        -- Update db_path to the newly copied DB
+        local new_db_path = target_pkg_dir .. "/app_webview/Default/Cookies"
+        local check_db = shell.su("test -e " .. shell.quote(new_db_path) .. " && echo ok")
+        if shell.trim(check_db) ~= "ok" then
+            new_db_path = target_pkg_dir .. "/app_webview/Cookies"
+        end
+        db_path = new_db_path
+    end
+
+    -- Step 3: Write prefs.xml to update the CLI status table username
+    if username then
+        ui.info("Updating CLI status table username...")
         local prefs_content = string.format([[
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -2035,25 +2056,19 @@ function cookie.inject(package_name, cookie_value, username)
 ]], username, username)
         
         local temp_xml = "/data/local/tmp/prefs_" .. package_name .. ".xml"
-        local prefs_filename = "prefs.xml"
         local code_echo = shell.su("echo " .. shell.quote(prefs_content) .. " > " .. temp_xml)
         if code_echo == 0 then
-            shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/" .. prefs_filename))
-        else
-            ui.warn("Failed to write prefs.xml to temp")
+            shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/prefs.xml"))
         end
     end
 
-    -- Step 4: Inject SQLite database
+    -- Step 4: Inject SQLite database with the NEW cookie
     ui.info("Injecting cookie into database...")
     local result, err_msg = cookie.inject_sqlite(package_name, db_path, cookie_value)
     
     -- Step 5: Fix permissions
-    if username then
-        local prefs_filename = "prefs.xml"
-        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/" .. prefs_filename)
-    end
-    cookie.fix_permissions(package_name, db_path)
+    cookie.fix_permissions(package_name, target_pkg_dir .. "/shared_prefs")
+    cookie.fix_permissions(package_name, target_pkg_dir .. "/app_webview")
     
     if result then
         ui.success("Cookie injected successfully!")
@@ -2073,7 +2088,7 @@ function cookie.inject_sqlite(package_name, db_path, cookie_value)
     ui.info("Injecting via SQLite: " .. db_path)
 
     local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
-    shell.su("cp " .. shell.quote(db_path) .. " " .. shell.quote(temp_db))
+    shell.su("cat " .. shell.quote(db_path) .. " > " .. shell.quote(temp_db))
 
     -- Try UPDATE first (Schema agnostic)
     local update_sql = "UPDATE cookies SET value=" .. shell.quote(cookie_value) .. " WHERE name='.ROBLOSECURITY';"
@@ -2084,116 +2099,39 @@ function cookie.inject_sqlite(package_name, db_path, cookie_value)
     if not check_out or shell.trim(check_out) == "" then
         -- We must INSERT.
         local info = COOKIE_DB_INFO
+        
+        -- WebKit epoch is 1601-01-01, Unix is 1970-01-01. Difference is 11644473600 seconds.
+        -- WebKit stores timestamps in MICROSECONDS.
         local current_unix = os.time()
-        local creation_utc = math.floor(current_unix * 1000000 + 11644473600000000)
-        local expires_utc = creation_utc + math.floor(365 * 24 * 3600 * 1000000)
+        local expires_unix = current_unix + (365 * 24 * 3600)
+        local creation_webkit = string.format("%.0f", (current_unix + 11644473600) * 1000000)
+        local expires_webkit = string.format("%.0f", (expires_unix + 11644473600) * 1000000)
         
-        -- Dynamically extract schema to prevent NOT NULL constraint failures on newer Chromium versions
-        local _, pragma_out = shell.sqlite(temp_db, "PRAGMA table_info(cookies);")
-        local success_insert = false
-        
-        if pragma_out and shell.trim(pragma_out) ~= "" then
-            local columns = {}
-            local values = {}
-            
-            for line in pragma_out:gmatch("[^\r\n]+") do
-                local parts = {}
-                for part in string.gmatch(line .. "|", "(.-)|") do
-                    table.insert(parts, part)
-                end
-                
-                if #parts >= 3 then
-                    local col_name = parts[2]
-                    local col_type = (parts[3] or ""):upper()
-                    
-                    if col_name and col_name ~= "" then
-                        table.insert(columns, col_name)
-                        
-                        -- Assign values based on column name
-                        if col_name == "creation_utc" or col_name == "last_access_utc" or col_name == "last_update_utc" then
-                            table.insert(values, tostring(creation_utc))
-                        elseif col_name == "expires_utc" then
-                            table.insert(values, tostring(expires_utc))
-                        elseif col_name == "host_key" or col_name == "top_frame_site_key" then
-                            table.insert(values, "'" .. info.domain .. "'")
-                        elseif col_name == "name" then
-                            table.insert(values, "'" .. info.name .. "'")
-                        elseif col_name == "value" then
-                            table.insert(values, "'" .. cookie_value .. "'")
-                        elseif col_name == "path" then
-                            table.insert(values, "'" .. info.path .. "'")
-                        elseif col_name == "is_secure" or col_name == "is_httponly" or col_name == "has_expires" or col_name == "is_persistent" or col_name == "secure" or col_name == "httponly" then
-                            table.insert(values, "1")
-                        elseif col_name == "priority" then
-                            table.insert(values, "1")
-                        elseif col_name == "samesite" then
-                            table.insert(values, "-1")
-                        elseif col_name == "source_scheme" then
-                            table.insert(values, "2")
-                        elseif col_name == "source_port" then
-                            table.insert(values, "443")
-                        elseif col_name == "is_same_party" then
-                            table.insert(values, "0")
-                        else
-                            if col_type:find("INT") then
-                                table.insert(values, "0")
-                            else
-                                table.insert(values, "''")
-                            end
-                        end
-                    end
-                end
-            end
-            
-            if #columns > 0 then
-                local insert_sql = string.format(
-                    "INSERT INTO cookies (%s) VALUES (%s);",
-                    table.concat(columns, ", "),
-                    table.concat(values, ", ")
-                )
-                local c2, err2 = shell.sqlite(temp_db, insert_sql)
-                if c2 == 0 then
-                    success_insert = true
-                else
-                    ui.warn("Dynamic INSERT failed: " .. tostring(err2))
-                end
-            end
-        end
-        
-        if not success_insert then
-            ui.warn("Falling back to generic schema...")
-            -- Try generic Chromium schema
-            local insert_sql = string.format(
-                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
-                creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
+        -- Try Chromium schema with WebKit timestamps
+        local insert_sql = string.format(
+            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+            creation_webkit, info.domain, info.name, cookie_value, info.path, expires_webkit, creation_webkit
+        )
+        local c2, out2 = shell.sqlite(temp_db, insert_sql)
+        if c2 ~= 0 then
+            -- Fallback to older Chromium schema
+            insert_sql = string.format(
+                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
+                creation_webkit, info.domain, info.name, cookie_value, info.path, expires_webkit, creation_webkit
             )
-            local c2, _ = shell.sqlite(temp_db, insert_sql)
-            if c2 ~= 0 then
-                -- Fallback to older Chromium schema
-                insert_sql = string.format(
-                    "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
-                    creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
-                )
-                local c3, err3 = shell.sqlite(temp_db, insert_sql)
-                if c3 ~= 0 then
-                    ui.error("All INSERT methods failed!")
-                    return false, err3
-                end
-            end
+            shell.sqlite(temp_db, insert_sql)
         end
     end
 
-    -- Move temp_db back to db_path using cat to preserve SELinux context and inode
+    -- Move temp_db back to db_path using cat to preserve SELinux/Permissions
     shell.su("cat " .. shell.quote(temp_db) .. " > " .. shell.quote(db_path))
     shell.su("rm -f " .. shell.quote(temp_db))
 
-    -- Fix permissions
+    -- Fix permissions just in case
     cookie.fix_permissions(package_name, db_path)
     ui.success("Cookie injected successfully!")
     return true, nil
 end
-
-
 
 --- Fix file permissions after injection
 ---@param package_name string
@@ -2222,166 +2160,103 @@ end
 ---@param packages table Available packages
 ---@return table cfg_data (modified)
 function cookie.injection_menu(cfg_data, packages)
-    while true do
-        ui.header("Cookie Injection")
+    ui.header("Cookie Injection")
 
-        if #packages == 0 then
-            ui.error("No Roblox packages found on device!")
-            ui.info("Press Enter to go back...")
-            io.read("*l")
-            return cfg_data
-        end
+    if #packages == 0 then
+        ui.error("No Roblox packages found on device!")
+        ui.info("Press Enter to go back...")
+        io.read("*l")
+        return cfg_data
+    end
 
-        -- Show available packages
-        ui.info("Available packages:")
-        local masked_display = config.get(cfg_data, "cookie.masked_display", true)
-        local menu_items = {}
-        for i, pkg in ipairs(packages) do
-            local existing = config.get_cookie(cfg_data, pkg)
-            if not existing then
-                existing = cookie.extract(pkg)
-                if existing then
-                    config.set_cookie(cfg_data, pkg, existing)
-                    config.save(cfg_data)
-                end
-            end
-            local status
-            if existing then
-                local disp = masked_display and cookie.mask(existing) or existing
-                status = ui.c(disp, ui.color.green)
+    -- Show available packages
+    ui.info("Available packages:")
+    local menu_items = {}
+    for i, pkg in ipairs(packages) do
+        local existing = config.get_cookie(cfg_data, pkg)
+        local status = existing and (ui.c("has cookie", ui.color.green)) or (ui.c("no cookie", ui.color.gray))
+        menu_items[#menu_items + 1] = {
+            key = tostring(i),
+            label = pkg .. "  " .. status,
+        }
+    end
+    menu_items[#menu_items + 1] = { separator = true }
+    menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
+
+    local choice = ui.menu(menu_items, "Select package")
+    local idx = tonumber(choice)
+
+    if not idx or idx == 0 or idx > #packages then
+        return cfg_data
+    end
+
+    local target_pkg = packages[idx]
+    print("")
+    ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
+
+    -- Ask for action
+    local action = ui.menu({
+        { key = "1", label = "Inject new cookie" },
+        { key = "2", label = "View current cookie" },
+        { key = "3", label = "Remove cookie" },
+        { key = "0", label = "Back", color = ui.color.gray },
+    }, "Select action")
+
+    if action == "1" then
+        -- Inject new cookie
+        print("")
+        ui.info("Paste your .ROBLOSECURITY cookie below:")
+        ui.dim("(The cookie starting with _|WARNING: or just the token)")
+        print("")
+        io.write(ui.color.cyan .. "> " .. ui.color.reset)
+        io.flush()
+        local cookie_input = io.read("*l")
+
+        if not cookie_input or cookie_input == "" then
+            ui.warn("No cookie provided")
+        else
+            local ok, inject_err = cookie.inject(target_pkg, cookie_input)
+            if ok then
+                -- Save to config
+                config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                config.save(cfg_data)
+                ui.success("Cookie saved to config and injected!")
             else
-                status = ui.c("no cookie", ui.color.gray)
+                ui.error("Injection failed: " .. tostring(inject_err))
+                -- Still save to config for later use
+                if ui.confirm("Save cookie to config anyway?", true) then
+                    config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
+                    config.save(cfg_data)
+                    ui.info("Cookie saved to config")
+                end
             end
-            menu_items[#menu_items + 1] = {
-                key = tostring(i),
-                label = pkg .. "  " .. status,
-            }
-        end
-        menu_items[#menu_items + 1] = { separator = true }
-        menu_items[#menu_items + 1] = { key = "0", label = "Back", color = ui.color.gray }
-
-        local choice = ui.menu(menu_items, "Select package")
-        local idx = tonumber(choice)
-
-        if not idx or idx == 0 or idx > #packages then
-            return cfg_data
         end
 
-        local target_pkg = packages[idx]
-
-        while true do
-            local existing = config.get_cookie(cfg_data, target_pkg)
-            if not existing then
-                existing = cookie.extract(target_pkg)
-                if existing then
-                    -- Save extracted cookie to config
-                    config.set_cookie(cfg_data, target_pkg, existing)
-                    config.save(cfg_data)
-                end
-            end
-            
+    elseif action == "2" then
+        -- View current cookie
+        local existing = config.get_cookie(cfg_data, target_pkg)
+        if existing then
             print("")
-            ui.info("Target: " .. ui.c(target_pkg, ui.color.cyan))
-            if existing then
-                local disp = masked_display and cookie.mask(existing) or existing
-                ui.kv("Current Cookie", disp)
-            else
-                ui.kv("Current Cookie", ui.c("No cookie stored", ui.color.gray))
-            end
-            print("")
+            ui.info("Cookie for " .. target_pkg .. ":")
+            ui.kv("Masked", cookie.mask(existing))
+            ui.kv("Length", tostring(#existing) .. " chars")
+        else
+            ui.warn("No cookie stored for " .. target_pkg)
+        end
 
-            -- Ask for action
-            local action = ui.menu({
-                { key = "1", label = existing and "Replace current cookie" or "Inject new cookie" },
-                { key = "2", label = "Verify a cookie manually (Roblox API)" },
-                { key = "3", label = "Remove cookie", color = ui.color.red },
-                { key = "0", label = "Back", color = ui.color.gray },
-            }, "Select action")
-
-            if not action or action == "0" then
-                break -- Go back to package list
-            end
-
-            if action == "1" then
-                -- Inject new cookie
-                print("")
-                ui.info("Paste your .ROBLOSECURITY cookie below:")
-                ui.dim("(The cookie starting with _|WARNING: or just the token)")
-                print("")
-                io.write(ui.color.cyan .. "> " .. ui.color.reset)
-                io.flush()
-                local cookie_input = io.read("*l")
-
-                if not cookie_input or cookie_input == "" then
-                    ui.warn("No cookie provided")
-                else
-                    ui.info("Verifying cookie before injection...")
-                    local valid, name_or_err = shell.verify_cookie(cookie.clean(cookie_input))
-                    if valid then
-                        ui.success("Cookie is valid! Account: " .. ui.c(name_or_err, ui.color.green))
-                    else
-                        ui.warn("Cookie verification failed: " .. name_or_err)
-                        if not ui.confirm("Do you still want to inject this cookie?", false) then
-                            -- Skip injection
-                            goto continue_action
-                        end
-                    end
-                    
-                    local ok, inject_err = cookie.inject(target_pkg, cookie_input, valid and name_or_err or nil)
-                    if ok then
-                        config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
-                        config.save(cfg_data)
-                        ui.success("Cookie saved to config and injected!")
-                    else
-                        ui.error("Injection failed: " .. tostring(inject_err))
-                        if ui.confirm("Save cookie to config anyway?", true) then
-                            config.set_cookie(cfg_data, target_pkg, cookie.clean(cookie_input))
-                            config.save(cfg_data)
-                            ui.info("Cookie saved to config")
-                        end
-                    end
-                end
-
-            elseif action == "2" then
-                print("")
-                ui.info("Paste the cookie you want to verify:")
-                io.write(ui.color.cyan .. "> " .. ui.color.reset)
-                io.flush()
-                local test_cookie = io.read("*l")
-                
-                if test_cookie and test_cookie ~= "" then
-                    ui.info("Verifying cookie with Roblox API...")
-                    local valid, name_or_err = shell.verify_cookie(cookie.clean(test_cookie))
-                    if valid then
-                        ui.success("Cookie is VALID!")
-                        ui.kv("Account Name", ui.c(name_or_err, ui.color.green))
-                    else
-                        ui.error("Cookie is INVALID or EXPIRED: " .. name_or_err)
-                    end
-                else
-                    ui.warn("No cookie provided")
-                end
-
-            elseif action == "3" then
-                if existing and ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
-                    config.set_cookie(cfg_data, target_pkg, nil)
-                    config.save(cfg_data)
-                    -- Also wipe it from the app data
-                    ui.info("Wiping cookie from app data...")
-                    shell.am_force_stop(target_pkg)
-                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Default/Cookies")
-                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/app_webview/Cookies")
-                    shell.su("rm -f /data/data/" .. shell.quote(target_pkg) .. "/shared_prefs/prefs.xml")
-                    ui.success("Cookie removed completely!")
-                end
-            end
-
-            ::continue_action::
-            print("")
-            ui.info("Press Enter to continue...")
-            io.read("*l")
+    elseif action == "3" then
+        -- Remove cookie
+        if ui.confirm("Remove cookie for " .. target_pkg .. "?", false) then
+            config.set_cookie(cfg_data, target_pkg, nil)
+            config.save(cfg_data)
+            ui.success("Cookie removed")
         end
     end
+
+    print("")
+    ui.info("Press Enter to continue...")
+    io.read("*l")
+    return cfg_data
 end
 
 return cookie
