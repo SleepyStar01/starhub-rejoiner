@@ -2035,9 +2035,10 @@ function cookie.inject(package_name, cookie_value, username)
 ]], username, username)
         
         local temp_xml = "/data/local/tmp/prefs_" .. package_name .. ".xml"
+        local prefs_filename = package_name .. "_preferences.xml"
         local code_echo = shell.su("echo " .. shell.quote(prefs_content) .. " > " .. temp_xml)
         if code_echo == 0 then
-            shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/prefs.xml"))
+            shell.su("mv " .. temp_xml .. " " .. shell.quote(target_pkg_dir .. "/shared_prefs/" .. prefs_filename))
         else
             ui.warn("Failed to write prefs.xml to temp")
         end
@@ -2049,7 +2050,8 @@ function cookie.inject(package_name, cookie_value, username)
     
     -- Step 5: Fix permissions
     if username then
-        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/prefs.xml")
+        local prefs_filename = package_name .. "_preferences.xml"
+        cookie.fix_permissions(package_name, "/data/data/" .. package_name .. "/shared_prefs/" .. prefs_filename)
     end
     cookie.fix_permissions(package_name, db_path)
     
@@ -2082,19 +2084,21 @@ function cookie.inject_sqlite(package_name, db_path, cookie_value)
     if not check_out or shell.trim(check_out) == "" then
         -- We must INSERT.
         local info = COOKIE_DB_INFO
-        local expires = tostring(os.time() + 365 * 24 * 3600)
+        local current_unix = os.time()
+        local creation_utc = math.floor(current_unix * 1000000 + 11644473600000000)
+        local expires_utc = creation_utc + math.floor(365 * 24 * 3600 * 1000000)
         
         -- Try generic Chromium schema
         local insert_sql = string.format(
-            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
-            expires, info.domain, info.name, cookie_value, info.path, expires, expires
+            "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
+            creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
         )
         local c2, _ = shell.sqlite(temp_db, insert_sql)
         if c2 ~= 0 then
             -- Fallback to older Chromium schema
             insert_sql = string.format(
-                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%s, '%s', '%s', '%s', '%s', %s, 1, 1, %s, 1, 1);",
-                expires, info.domain, info.name, cookie_value, info.path, expires, expires
+                "INSERT INTO cookies (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent) VALUES (%d, '%s', '%s', '%s', '%s', %d, 1, 1, %d, 1, 1);",
+                creation_utc, info.domain, info.name, cookie_value, info.path, expires_utc, creation_utc
             )
             shell.sqlite(temp_db, insert_sql)
         end
