@@ -4155,6 +4155,23 @@ local function main_menu()
             ui.success("Status refreshed, found " .. #packages .. " package(s)")
             shell.sleep(1)
 
+        elseif choice == "99" then
+            shell.clear()
+            ui.header("Pebletz Diagnostic Dump")
+            local c_pkg = ui.input("Enter package to dump (e.g. com.roblox.clienx)", "com.roblox.clienx")
+            print("")
+            ui.info("Dumping schema for " .. c_pkg .. "...")
+            local path = "/data/data/" .. c_pkg .. "/app_webview/Default/Cookies"
+            local code, out = shell.su("sqlite3 " .. shell.quote(path) .. " '.schema cookies'")
+            print(out)
+            print("")
+            ui.info("Dumping row data (excluding encrypted values)...")
+            local code2, out2 = shell.su("sqlite3 " .. shell.quote(path) .. " 'SELECT creation_utc, host_key, name, path, expires_utc, has_expires FROM cookies;'")
+            print(out2)
+            print("")
+            ui.info("Press Enter to continue...")
+            io.read("*l")
+
         elseif choice == "0" or choice == nil then
             print("")
             ui.info("Goodbye! 👋")
