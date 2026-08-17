@@ -2405,6 +2405,13 @@ function grid.apply(cfg_data, packages, rows, cols)
     shell.su("settings put global enable_freeform_support 1")
     shell.su("settings put global force_resizable_activities 1")
     shell.sleep(1)
+    
+    if not config.get(cfg_data, "monitor.split_screen", false) then
+        ui.warn("NOTE: Jika Freeform (Custom Bounds) tidak mau terbuka / blank,")
+        ui.warn("      Kamu WAJIB REBOOT / RESTART cloudphone ini sekali")
+        ui.warn("      agar pengaturan Freeform System aktif secara permanen!")
+        shell.sleep(2)
+    end
 
     local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 60))
 
@@ -4035,7 +4042,7 @@ local function config_menu(cfg_data)
                 ui.info("Jika sudah, tekan [ENTER] di sini untuk menghentikan rekaman dan melihat hasilnya...")
                 io.read("*l")
                 ui.info("Menyaring hasil Logcat...")
-                local _, out = shell.su("logcat -d | grep -iE 'ActivityManager.*(START|resize|bounds|roblox)' | tail -n 30")
+                local _, out = shell.su("logcat -d -b main,system | grep -i 'ActivityManager\\|roblox\\|bounds' | tail -n 50")
                 print("\n--- HASIL LOGCAT (ActivityManager) ---")
                 print(out)
                 
