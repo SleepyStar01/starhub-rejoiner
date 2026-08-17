@@ -2032,16 +2032,23 @@ function cookie.inject(package_name, cookie_value)
 
     ui.info("Found template from another clone: " .. template_db_path)
 
+    local template_pkg_dir = template_db_path:match("(/data/data/[^/]+)")
+    local target_pkg_dir = "/data/data/" .. package_name
+
     -- Determine target path based on template's relative path
     local relative_path = template_db_path:match("/data/data/[^/]+/(.+)")
-    local target_db_path = "/data/data/" .. package_name .. "/" .. relative_path
+    local target_db_path = target_pkg_dir .. "/" .. relative_path
     local target_dir = target_db_path:match("(.+)/[^/]+$")
     local temp_db = "/data/local/tmp/Cookies_" .. package_name .. ".db"
 
     -- Create directories
     shell.su("mkdir -p " .. shell.quote(target_dir))
     
-    -- Copy template to temp
+    -- Copy shared_prefs from template to trick Native UI into checking WebView!
+    ui.info("Copying shared_prefs from template...")
+    shell.su("cp -r " .. shell.quote(template_pkg_dir .. "/shared_prefs") .. " " .. shell.quote(target_pkg_dir .. "/"))
+    
+    -- Copy template DB to temp
     shell.su("cp " .. shell.quote(template_db_path) .. " " .. shell.quote(temp_db))
     
     -- Update the cookie in temp
@@ -2056,8 +2063,12 @@ function cookie.inject(package_name, cookie_value)
     shell.su("cp " .. shell.quote(temp_db) .. " " .. shell.quote(target_db_path))
     shell.su("rm -f " .. shell.quote(temp_db))
 
-    -- Fix permissions
+    -- Fix permissions recursively for the whole app data (by passing shared_prefs, it chowns the parent)
+    cookie.fix_permissions(package_name, target_pkg_dir .. "/shared_prefs")
+    
+    -- Also fix permissions for the db explicitly
     cookie.fix_permissions(package_name, target_db_path)
+
     ui.success("Cookie injected via Template Copy!")
     return true, nil
 end
