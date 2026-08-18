@@ -1637,16 +1637,9 @@ function device.get_package_status(package_name)
     if pid then
         status.running = true
         status.pid = pid
-        status.state = "background"
-
-        -- Try to detect if actually ingame by checking activity
-        local _, activity_output = shell.su(
-            "dumpsys activity activities 2>/dev/null | grep -A2 " ..
-            shell.quote(package_name) .. " | head -5"
-        )
-        if activity_output and activity_output:find("RobloxActivity") then
-            status.state = "running"
-        end
+        -- In a multi-window/grid environment, unfocused floating windows are technically 'PAUSED'
+        -- by the OS, but they are still visible and running the game. We just label them as "running".
+        status.state = "running"
     end
 
     -- Try to detect username from logcat/prefs
