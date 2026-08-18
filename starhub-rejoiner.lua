@@ -3381,6 +3381,55 @@ handlers.force_stop = function(params, cfg_data)
     return { ok = code == 0, output = output }
 end
 
+--- POST /launch_all — Launch all packages with stagger delay
+handlers.launch_all = function(params, cfg_data)
+    local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "roblox"))
+    local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 8)) or 8
+    local results = {}
+    
+    for i, pkg in ipairs(packages) do
+        local uri = config.get_launch_uri(cfg_data, pkg)
+        local code, output
+        if uri then
+            code, output = shell.am_start(pkg, uri)
+        else
+            code, output = shell.am_start(pkg)
+        end
+        table.insert(results, { package = pkg, code = code, output = output })
+        
+        if i < #packages and stagger > 0 then
+            shell.sleep(stagger)
+        end
+    end
+    
+    return { ok = true, results = results }
+end
+
+--- POST /force_stop_all — Force stop all packages
+handlers.force_stop_all = function(params, cfg_data)
+    local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "roblox"))
+    for _, pkg in ipairs(packages) do
+        shell.am_force_stop(pkg)
+    end
+    return { ok = true, count = #packages }
+end
+
+--- POST /grid_apply — Apply auto grid layout
+handlers.grid_apply = function(params, cfg_data)
+    local rows = tonumber(params.rows) or 2
+    local cols = tonumber(params.cols) or 2
+    local is_small = params.is_small == true
+    local mode = params.mode or "app_cloner"
+    
+    config.set(cfg_data, "monitor.grid_mode", mode)
+    local packages = device.get_packages(config.get(cfg_data, "packages.prefix", "roblox"))
+    
+    local grid = require("grid")
+    grid.apply(cfg_data, packages, rows, cols, is_small)
+    
+    return { ok = true, packages = #packages, mode = mode }
+end
+
 --- POST /inject_cookie — Inject a cookie into a package
 handlers.inject_cookie = function(params, cfg_data)
     if not params or not params.package or not params.cookie then
@@ -3499,6 +3548,9 @@ function api.list_commands()
         { name = "get_packages",   description = "List installed Roblox packages" },
         { name = "rejoin",         description = "Rejoin a specific package (params: package)" },
         { name = "force_stop",     description = "Force stop a package (params: package)" },
+        { name = "launch_all",     description = "Launch all packages" },
+        { name = "force_stop_all", description = "Force stop all packages" },
+        { name = "grid_apply",     description = "Apply grid (params: rows, cols, is_small, mode)" },
         { name = "inject_cookie",  description = "Inject cookie (params: package, cookie)" },
         { name = "get_config",     description = "Get current configuration" },
         { name = "set_config",     description = "Update config value (params: key, value)" },
@@ -3896,9 +3948,10 @@ local api     = require("api")
 
 local function parse_args()
     local args = {
-        mode = nil,     -- "monitor", "status", "inject", "api", "setup"
+        mode = nil,     -- "monitor", "status", "inject", "api", "setup", "agent"
         lang = nil,     -- "id" or "en"
         api_mode = false,
+        agent_mode = false,
     }
 
     local i = 1
@@ -3912,6 +3965,9 @@ local function parse_args()
             i = i + 2
         elseif a == "--api" then
             args.api_mode = true
+            i = i + 1
+        elseif a == "--agent" then
+            args.agent_mode = true
             i = i + 1
         elseif a == "--help" or a == "-h" then
             args.mode = "help"
@@ -3951,6 +4007,7 @@ local function print_help()
     print("  lua main.lua --mode monitor     # Start monitoring")
     print("  lua main.lua --mode status      # Show status")
     print("  lua main.lua --api              # API mode")
+    print("  lua main.lua --agent            # Start Web Polling Agent")
     print("")
 end
 
@@ -4415,6 +4472,13 @@ local function main()
     if args.api_mode then
         local cfg_data = config.load()
         api.stdin_loop(cfg_data)
+        os.exit(0)
+    end
+
+    if args.agent_mode then
+        local cfg_data = config.load()
+        local agent = require("agent")
+        agent.start(cfg_data)
         os.exit(0)
     end
 
