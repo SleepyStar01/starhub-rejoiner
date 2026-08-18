@@ -2394,11 +2394,21 @@ function grid.apply(cfg_data, packages, rows, cols)
 
     ui.info(string.format("Screen: %dx%d | Cell: %dx%d", w, h, cell_w, cell_h))
 
-    -- Force stop all target packages first
-    ui.info("Stopping selected packages before arranging...")
-    for _, pkg in ipairs(packages) do
-        shell.am_force_stop(pkg)
+    local function get_task_id(pkg_name)
+        local _, out = shell.su("dumpsys activity activities | grep -E 'TaskRecord{|Task{|realActivity='")
+        local current_task = nil
+        for line in out:gmatch("[^\r\n]+") do
+            local tid = line:match("[Tt]ask%a*{.-%s+#(%d+)")
+            if tid then current_task = tid end
+            
+            if current_task and line:match("realActivity=" .. pkg_name .. "/") then
+                return current_task
+            end
+        end
+        return nil
     end
+
+    ui.info("Arranging running packages...")
     shell.sleep(1)
 
     -- Force enable freeform support just in case the device has it disabled
@@ -2416,43 +2426,41 @@ function grid.apply(cfg_data, packages, rows, cols)
     local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 60))
 
     for i, pkg in ipairs(packages) do
-        local uri = config.get_launch_uri(cfg_data, pkg)
-        if not uri then
-            ui.warn("No Server Target / URI configured for " .. pkg)
+        -- 0-indexed for math
+        local idx = i - 1 
+        local r = math.floor(idx / cols)
+        local c = idx % cols
+
+        if r >= rows then
+            ui.warn(pkg .. " exceeds grid size, skipping...")
         else
-            -- 0-indexed for math
-            local idx = i - 1 
-            local r = math.floor(idx / cols)
-            local c = idx % cols
+            local left = c * cell_w
+            local top = r * cell_h
+            local right = left + cell_w
+            local bottom = top + cell_h
 
-            if r >= rows then
-                ui.warn(pkg .. " exceeds grid size, skipping...")
+            local tid = get_task_id(pkg)
+            
+            if not tid then
+                ui.warn("Package " .. pkg .. " is NOT running! Please launch it first.")
             else
-                local left = c * cell_w
-                local top = r * cell_h
-                local right = left + cell_w
-                local bottom = top + cell_h
-
-                -- Launch activity
-                ui.log(string.format("Launching %s at [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
-                local cmd = ""
-                
-                -- Check if config has split screen explicitly requested
                 if config.get(cfg_data, "monitor.split_screen", false) then
                     local w_mode = (i == 1) and 3 or 4
-                    cmd = string.format("am start --windowingMode %d -a android.intent.action.VIEW -p %s -d %s",
-                                        w_mode, shell.quote(pkg), shell.quote(uri))
+                    ui.log(string.format("Setting %s (Task %s) to Split Screen %d...", pkg, tid, w_mode))
+                    -- Move task to split screen stack (requires Android 7+)
+                    -- Fallback to am start if move-task doesn't work well
+                    local cmd = string.format("am start --windowingMode %d -a android.intent.action.VIEW -p %s", w_mode, shell.quote(pkg))
+                    shell.su(cmd)
                 else
-                    cmd = string.format("am start --windowingMode 5 --bounds %d,%d,%d,%d -a android.intent.action.VIEW -p %s -d %s",
-                                        left, top, right, bottom, shell.quote(pkg), shell.quote(uri))
-                end
-                local code, out = shell.su(cmd)
-                if out and shell.trim(out) ~= "" then
-                    ui.warn("am output: " .. shell.trim(out))
+                    ui.log(string.format("Resizing %s (Task %s) to [%d,%d,%d,%d]...", pkg, tid, left, top, right, bottom))
+                    local cmd = string.format("am task resize %s %d %d %d %d", tid, left, top, right, bottom)
+                    local _, out = shell.su(cmd)
+                    if out and shell.trim(out) ~= "" then
+                        ui.warn("resize output: " .. shell.trim(out))
+                    end
                 end
                 
                 if i < #packages and stagger > 0 then
-                    ui.info("Waiting " .. stagger .. "s before next launch...")
                     shell.sleep(stagger)
                 end
             end
