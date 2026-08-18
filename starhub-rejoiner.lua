@@ -2387,8 +2387,7 @@ end
 ---@param rows number
 ---@param cols number
 ---@param is_small boolean|nil
----@param is_landscape boolean|nil
-function grid.apply(cfg_data, packages, rows, cols, is_small, is_landscape)
+function grid.apply(cfg_data, packages, rows, cols, is_small)
     if #packages == 0 then
         ui.error("No packages to arrange")
         return
@@ -2402,18 +2401,6 @@ function grid.apply(cfg_data, packages, rows, cols, is_small, is_landscape)
     if not w or not h then
         ui.error("Could not determine screen resolution")
         return
-    end
-
-    if is_landscape and w < h then
-        -- Swap width and height for landscape mode
-        local temp = w
-        w = h
-        h = temp
-    elseif not is_landscape and w > h then
-        -- Force portrait if somehow device defaults to landscape
-        local temp = w
-        w = h
-        h = temp
     end
 
     local scale = grid.get_density_scale()
@@ -2483,10 +2470,11 @@ function grid.apply(cfg_data, packages, rows, cols, is_small, is_landscape)
                 local prefs_file = shell.trim(ls_out)
                 
                 if prefs_file ~= "" and prefs_file:match("%.xml$") then
-                    local dp_left = math.floor(left / scale)
-                    local dp_top = math.floor(top / scale)
-                    local dp_right = math.floor(right / scale)
-                    local dp_bottom = math.floor(bottom / scale)
+                    -- Offset margin (4dp left, 75dp top) so it clears the Android status bar
+                    local dp_left = math.floor(left / scale) + 4
+                    local dp_top = math.floor(top / scale) + 75
+                    local dp_right = math.floor(right / scale) + 4
+                    local dp_bottom = math.floor(bottom / scale) + 75
 
                     local keys = {
                         "app_cloner_current_window_left", "app_cloner_current_window_top", "app_cloner_current_window_right", "app_cloner_current_window_bottom",
@@ -2606,25 +2594,15 @@ function grid.menu(cfg_data, packages)
         end
 
         local is_small = false
-        local is_landscape = false
-        
         if ask == "1" or ask == "2" then
             local size_ask = ui.menu({
                 { key = "1", label = "Fill Screen (Auto Calculate Height/Width)" },
                 { key = "2", label = "Small (Pebletz Fixed Size: 160x120 dp)" },
             }, "Window Size")
             is_small = (size_ask == "2")
-            
-            if not is_small then
-                local ori_ask = ui.menu({
-                    { key = "1", label = "Portrait (Tegak - Default 720x1280)" },
-                    { key = "2", label = "Landscape (Miring - 1280x720)" },
-                }, "Screen Orientation")
-                is_landscape = (ori_ask == "2")
-            end
         end
 
-        grid.apply(cfg_data, target_packages, rows, cols, is_small, is_landscape)
+        grid.apply(cfg_data, target_packages, rows, cols, is_small)
         shell.sleep(2)
     end
 end
@@ -4201,11 +4179,12 @@ local function package_menu(cfg_data, packages)
 
         local choice = ui.menu({
             { key = "1", label = "Refresh Package List" },
-            { key = "2", label = "Launch Package" },
-            { key = "3", label = "Force Stop Package" },
-            { key = "4", label = "Force Stop All" },
-            { key = "5", label = "Clear Cache (package)" },
-            { key = "6", label = "Set Package Prefix" },
+            { key = "2", label = "Launch Package (Specific)" },
+            { key = "3", label = "Launch All Packages" },
+            { key = "4", label = "Force Stop Package" },
+            { key = "5", label = "Force Stop All" },
+            { key = "6", label = "Clear Cache (package)" },
+            { key = "7", label = "Set Package Prefix" },
             { separator = true },
             { key = "0", label = "Back", color = ui.color.gray },
         })
@@ -4233,6 +4212,27 @@ local function package_menu(cfg_data, packages)
             end
 
         elseif choice == "3" then
+            if ui.confirm("Launch ALL packages?", false) then
+                local stagger = tonumber(config.get(cfg_data, "monitor.launch_stagger_seconds", 8)) or 8
+                for i, pkg in ipairs(packages) do
+                    local uri = config.get_launch_uri(cfg_data, pkg)
+                    if uri then
+                        ui.info("Launching " .. pkg .. "...")
+                        shell.am_start(pkg, uri)
+                    else
+                        ui.info("Launching " .. pkg .. " (no server configured)...")
+                        shell.am_start(pkg)
+                    end
+                    if i < #packages and stagger > 0 then
+                        ui.info("Waiting " .. stagger .. "s...")
+                        shell.sleep(stagger)
+                    end
+                end
+                ui.success("All packages launched!")
+                shell.sleep(1)
+            end
+
+        elseif choice == "4" then
             local idx = ui.input_number("Package number to stop", nil, 1, #packages)
             if idx and packages[idx] then
                 shell.am_force_stop(packages[idx])
@@ -4240,7 +4240,7 @@ local function package_menu(cfg_data, packages)
                 shell.sleep(1)
             end
 
-        elseif choice == "4" then
+        elseif choice == "5" then
             if ui.confirm("Force stop ALL packages?", false) then
                 for _, pkg in ipairs(packages) do
                     shell.am_force_stop(pkg)
@@ -4250,7 +4250,7 @@ local function package_menu(cfg_data, packages)
                 shell.sleep(1)
             end
 
-        elseif choice == "5" then
+        elseif choice == "6" then
             local idx = ui.input_number("Package number to clear cache", nil, 1, #packages)
             if idx and packages[idx] then
                 shell.clear_cache(packages[idx])
@@ -4354,7 +4354,7 @@ local function main_menu()
         elseif choice == "5" then
             cfg_data = config_menu(cfg_data)
 
-        elseif choice == "6" then
+        elseif choice == "7" then
             local new_prefix = ui.input("Package prefix", config.get(cfg_data, "packages.prefix", "com.roblox"))
             config.set(cfg_data, "packages.prefix", new_prefix)
             config.save(cfg_data)
