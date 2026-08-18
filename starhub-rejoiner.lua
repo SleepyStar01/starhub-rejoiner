@@ -3940,7 +3940,7 @@ local agent = {}
 ---@return table|nil command
 function agent.poll(url, device_id)
     local endpoint = url .. "/api/poll?device_id=" .. device_id
-    local code, output = shell.su("curl -s --max-time 10 " .. shell.quote(endpoint))
+    local code, output = shell.su("curl -s -H 'Bypass-Tunnel-Reminder: true' --max-time 10 " .. shell.quote(endpoint))
     
     if code == 0 and output and output ~= "" then
         local ok, data = pcall(json.decode, output)
@@ -3967,7 +3967,7 @@ function agent.report_status(url, device_id, cfg_data)
     shell.su(echo_cmd)
     
     local endpoint = url .. "/api/status"
-    shell.su("curl -s -X POST -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+    shell.su("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
     shell.su("rm -f " .. temp_file)
 end
 
@@ -3988,7 +3988,7 @@ function agent.report_result(url, device_id, job_id, result)
     shell.su(echo_cmd)
     
     local endpoint = url .. "/api/result"
-    shell.su("curl -s -X POST -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+    shell.su("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
     shell.su("rm -f " .. temp_file)
 end
 
