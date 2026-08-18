@@ -2445,10 +2445,10 @@ function grid.apply(cfg_data, packages, rows, cols)
                 ui.log(string.format("Applying App Cloner bounds to %s [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
                 shell.am_force_stop(pkg)
                 
-                local prefs_file = "/data/data/" .. pkg .. "/shared_prefs/" .. pkg .. "_preferences.xml"
-                local check = shell.su("test -f " .. shell.quote(prefs_file) .. " && echo ok")
+                local _, ls_out = shell.su("ls /data/data/" .. pkg .. "/shared_prefs/*_preferences.xml 2>/dev/null | head -n 1")
+                local prefs_file = shell.trim(ls_out)
                 
-                if shell.trim(check) == "ok" then
+                if prefs_file ~= "" and prefs_file:match("%.xml$") then
                     local keys = {
                         "app_cloner_current_window_left", "app_cloner_current_window_top", "app_cloner_current_window_right", "app_cloner_current_window_bottom",
                         "app_cloner_original_window_left", "app_cloner_original_window_top", "app_cloner_original_window_right", "app_cloner_original_window_bottom",
@@ -3556,9 +3556,10 @@ function optimizer.apply(package_name, json_content)
     shell.su("chmod 666 " .. shell.quote(target_file))
     
     -- Also update shared_prefs so UI reflects the manual setting
-    local prefs_file = "/data/data/" .. package_name .. "/shared_prefs/com.roblox.client_preferences.xml"
-    local check_prefs = shell.su("test -f " .. shell.quote(prefs_file) .. " && echo ok")
-    if shell.trim(check_prefs) == "ok" then
+    local _, ls_out = shell.su("ls /data/data/" .. package_name .. "/shared_prefs/*_preferences.xml 2>/dev/null | head -n 1")
+    local prefs_file = shell.trim(ls_out)
+    
+    if prefs_file ~= "" and prefs_file:match("%.xml$") then
         -- Remove existing keys
         shell.su("sed -i '/<int name=\"GraphicsMode\"/d' " .. shell.quote(prefs_file))
         shell.su("sed -i '/<int name=\"graphicsQualityLevel\"/d' " .. shell.quote(prefs_file))
