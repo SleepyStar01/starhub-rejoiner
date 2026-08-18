@@ -2386,7 +2386,8 @@ end
 ---@param packages table List of package names
 ---@param rows number
 ---@param cols number
-function grid.apply(cfg_data, packages, rows, cols)
+---@param is_small boolean|nil
+function grid.apply(cfg_data, packages, rows, cols, is_small)
     if #packages == 0 then
         ui.error("No packages to arrange")
         return
@@ -2402,8 +2403,15 @@ function grid.apply(cfg_data, packages, rows, cols)
         return
     end
 
+    local scale = grid.get_density_scale()
+
     local cell_w = math.floor(w / cols)
     local cell_h = math.floor(h / rows)
+
+    if is_small then
+        cell_w = math.floor(160 * scale)
+        cell_h = math.floor(120 * scale)
+    end
 
     ui.info(string.format("Screen: %dx%d | Cell: %dx%d", w, h, cell_w, cell_h))
 
@@ -2462,7 +2470,6 @@ function grid.apply(cfg_data, packages, rows, cols)
                 local prefs_file = shell.trim(ls_out)
                 
                 if prefs_file ~= "" and prefs_file:match("%.xml$") then
-                    local scale = grid.get_density_scale()
                     local dp_left = math.floor(left / scale)
                     local dp_top = math.floor(top / scale)
                     local dp_right = math.floor(right / scale)
@@ -2585,7 +2592,16 @@ function grid.menu(cfg_data, packages)
             return
         end
 
-        grid.apply(cfg_data, target_packages, rows, cols)
+        local is_small = false
+        if ask == "1" or ask == "2" then
+            local size_ask = ui.menu({
+                { key = "1", label = "Fill Screen (Auto Calculate Height/Width)" },
+                { key = "2", label = "Small (Pebletz Fixed Size: 160x120 dp)" },
+            }, "Window Size")
+            is_small = (size_ask == "2")
+        end
+
+        grid.apply(cfg_data, target_packages, rows, cols, is_small)
         shell.sleep(2)
     end
 end
