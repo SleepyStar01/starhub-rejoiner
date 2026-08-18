@@ -2439,34 +2439,75 @@ function grid.apply(cfg_data, packages, rows, cols)
             local right = left + cell_w
             local bottom = top + cell_h
 
-            local tid = get_task_id(pkg)
-            
-            if not tid then
-                ui.warn("Package " .. pkg .. " is NOT running! Please launch it first.")
-            else
-                if config.get(cfg_data, "monitor.split_screen", false) then
-                    local w_mode = (i == 1) and 3 or 4
-                    ui.log(string.format("Setting %s (Task %s) to Split Screen %d...", pkg, tid, w_mode))
-                    -- Move task to split screen stack (requires Android 7+)
-                    -- Fallback to am start if move-task doesn't work well
-                    local cmd = string.format("am start --windowingMode %d -a android.intent.action.VIEW -p %s", w_mode, shell.quote(pkg))
-                    shell.su(cmd)
-                else
-                    ui.log(string.format("Resizing %s (Task %s) to [%d,%d,%d,%d]...", pkg, tid, left, top, right, bottom))
-                    local cmd = string.format("am task resize %s %d %d %d %d", tid, left, top, right, bottom)
-                    local _, out = shell.su(cmd)
-                    if out and shell.trim(out) ~= "" then
-                        ui.warn("resize output: " .. shell.trim(out))
-                    end
-                end
+            local mode = config.get(cfg_data, "monitor.grid_mode", "app_cloner")
+
+            if mode == "app_cloner" then
+                ui.log(string.format("Applying App Cloner bounds to %s [%d,%d,%d,%d]...", pkg, left, top, right, bottom))
+                shell.am_force_stop(pkg)
                 
-                if i < #packages and stagger > 0 then
-                    shell.sleep(stagger)
+                local prefs_file = "/data/data/" .. pkg .. "/shared_prefs/" .. pkg .. "_preferences.xml"
+                local check = shell.su("test -f " .. shell.quote(prefs_file) .. " && echo ok")
+                
+                if shell.trim(check) == "ok" then
+                    local keys = {
+                        "app_cloner_current_window_left", "app_cloner_current_window_top", "app_cloner_current_window_right", "app_cloner_current_window_bottom",
+                        "app_cloner_original_window_left", "app_cloner_original_window_top", "app_cloner_original_window_right", "app_cloner_original_window_bottom",
+                        "floating_app_enabled"
+                    }
+                    local vals = {
+                        left, top, right, bottom,
+                        left, top, right, bottom,
+                        1 -- boolean true is usually stored differently or we can just hope the user already enabled it
+                    }
+                    
+                    -- Remove old keys
+                    for _, key in ipairs(keys) do
+                        shell.su("sed -i '/<int name=\"" .. key .. "\"/d' " .. shell.quote(prefs_file))
+                        shell.su("sed -i '/<boolean name=\"" .. key .. "\"/d' " .. shell.quote(prefs_file))
+                    end
+                    
+                    -- Inject new values
+                    local insert_str = "<boolean name=\\\"floating_app_enabled\\\" value=\\\"true\\\" />\\n"
+                    for i = 1, 8 do
+                        insert_str = insert_str .. string.format("    <int name=\\\"%s\\\" value=\\\"%d\\\" />\\n", keys[i], vals[i])
+                    end
+                    insert_str = insert_str .. "</map>"
+                    
+                    shell.su("sed -i 's#</map>#" .. insert_str .. "#' " .. shell.quote(prefs_file))
+                else
+                    ui.warn("Preferences file not found for " .. pkg .. "! Pastikan aplikasi sudah pernah dibuka.")
+                end
+
+            else
+                local tid = get_task_id(pkg)
+                
+                if not tid then
+                    ui.warn("Package " .. pkg .. " is NOT running! Please launch it first.")
+                else
+                    if mode == "split_screen" then
+                        local w_mode = (i == 1) and 3 or 4
+                        ui.log(string.format("Setting %s (Task %s) to Split Screen %d...", pkg, tid, w_mode))
+                        local cmd = string.format("am start --windowingMode %d -a android.intent.action.VIEW -p %s", w_mode, shell.quote(pkg))
+                        shell.su(cmd)
+                    elseif mode == "freeform" then
+                        ui.log(string.format("Resizing %s (Task %s) to [%d,%d,%d,%d]...", pkg, tid, left, top, right, bottom))
+                        local cmd = string.format("am task resize %s %d %d %d %d", tid, left, top, right, bottom)
+                        local _, out = shell.su(cmd)
+                        if out and shell.trim(out) ~= "" then
+                            ui.warn("resize output: " .. shell.trim(out))
+                        end
+                    end
                 end
             end
         end
     end
-    ui.success("Grid applied successfully!")
+    
+    local mode = config.get(cfg_data, "monitor.grid_mode", "app_cloner")
+    if mode == "app_cloner" then
+        ui.success("Grid configuration saved! The apps will open in grid bounds upon next launch.")
+    else
+        ui.success("Grid applied successfully to running apps!")
+    end
 end
 
 --- Interactive menu for Auto Grid
@@ -2512,18 +2553,20 @@ function grid.menu(cfg_data, packages)
 
     if rows and cols then
         local total = rows * cols
-        if total <= 2 then
-            local ask = ui.menu({
-                { key = "1", label = "Freeform Mode (Custom Bounds)" },
-                { key = "2", label = "Native Split-Screen Mode (Recommended)" },
-            }, "Grid Windowing Mode")
-            if ask == "2" then
-                cfg_data["monitor.split_screen"] = true
-            else
-                cfg_data["monitor.split_screen"] = false
-            end
+        local ask = ui.menu({
+            { key = "1", label = "App Cloner Grid (Recommended for Applisto Clones)" },
+            { key = "2", label = "Native Freeform (Resize Running Tasks)" },
+            { key = "3", label = "Native Split-Screen (Max 2 Apps)" },
+        }, "Grid Windowing Mode")
+        
+        if ask == "1" then
+            cfg_data["monitor.grid_mode"] = "app_cloner"
+        elseif ask == "2" then
+            cfg_data["monitor.grid_mode"] = "freeform"
+        elseif ask == "3" then
+            cfg_data["monitor.grid_mode"] = "split_screen"
         else
-            cfg_data["monitor.split_screen"] = false
+            return
         end
 
         grid.apply(cfg_data, target_packages, rows, cols)
