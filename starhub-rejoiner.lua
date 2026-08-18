@@ -4001,6 +4001,7 @@ local function config_menu(cfg_data)
                 { key = "1", label = "Spy File System (Cookies & Prefs)" },
                 { key = "2", label = "Spy Database Schema" },
                 { key = "3", label = "Spy Logcat (Am Start / Intents)" },
+                { key = "4", label = "Spy App Cloner Preferences" },
                 { key = "0", label = "Back" }
             }, "Select Diagnostic Tool")
             
@@ -4058,6 +4059,16 @@ local function config_menu(cfg_data)
                 print("\n--- HASIL PROSES ---")
                 local _, p_out = shell.su("ps -A -o pid,args | grep -iE '(am |roblox)' | grep -v grep")
                 print(p_out)
+                
+            elseif spy_choice == "4" then
+                local c_pkg = ui.input("Enter package to dump (e.g. com.roblox.clienu)", packages[1] or "com.roblox.clienu")
+                ui.info("Scanning for App Cloner preferences in " .. c_pkg .. "...")
+                local _, find_out = shell.su("find /data/data/" .. c_pkg .. "/shared_prefs/ -name '*clone*.xml' -o -name '*applisto*.xml' -o -name '*_preferences.xml'")
+                for file in find_out:gmatch("[^\r\n]+") do
+                    ui.success("Found: " .. file)
+                    local _, cat_out = shell.su("grep -i -E 'float|window|width|height|pos|x|y' " .. shell.quote(file))
+                    print(cat_out)
+                end
             end
 
             print("")
