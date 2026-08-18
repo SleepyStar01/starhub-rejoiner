@@ -3919,6 +3919,154 @@ return autoexec
 end
 
 -- ============================================================
+-- MODULE: agent
+-- ============================================================
+_MODULES["agent"] = function()
+-- StarhubRejoiner: Web Polling Agent
+-- Connects the device to the Next.js Web Dashboard via HTTP Long Polling
+
+local json = require("json")
+local shell = require("shell")
+local config = require("config")
+local device = require("device")
+local api = require("api")
+local ui = require("ui")
+
+local agent = {}
+
+--- Poll the dashboard for commands
+---@param url string The dashboard base URL
+---@param device_id string Unique device ID
+---@return table|nil command
+function agent.poll(url, device_id)
+    local endpoint = url .. "/api/poll?device_id=" .. device_id
+    local code, output = shell.su("curl -s --max-time 10 " .. shell.quote(endpoint))
+    
+    if code == 0 and output and output ~= "" then
+        local ok, data = pcall(json.decode, output)
+        if ok and type(data) == "table" and data.command then
+            return data
+        end
+    end
+    return nil
+end
+
+--- Send status to the dashboard
+---@param url string
+---@param device_id string
+---@param cfg_data table
+function agent.report_status(url, device_id, cfg_data)
+    local status_data = api.execute("get_status", {}, cfg_data)
+    status_data.device_id = device_id
+    
+    local payload = json.encode(status_data)
+    local temp_file = "/data/local/tmp/status_payload.json"
+    
+    -- Write payload to file to avoid curl command line length limits
+    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", temp_file, payload)
+    shell.su(echo_cmd)
+    
+    local endpoint = url .. "/api/status"
+    shell.su("curl -s -X POST -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+    shell.su("rm -f " .. temp_file)
+end
+
+--- Send command result back to the dashboard
+---@param url string
+---@param device_id string
+---@param job_id string
+---@param result table
+function agent.report_result(url, device_id, job_id, result)
+    local payload = json.encode({
+        device_id = device_id,
+        job_id = job_id,
+        result = result
+    })
+    
+    local temp_file = "/data/local/tmp/result_payload.json"
+    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", temp_file, payload)
+    shell.su(echo_cmd)
+    
+    local endpoint = url .. "/api/result"
+    shell.su("curl -s -X POST -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+    shell.su("rm -f " .. temp_file)
+end
+
+--- Start the polling loop
+---@param cfg_data table
+function agent.start(cfg_data)
+    local dashboard_url = config.get(cfg_data, "agent.dashboard_url", "")
+    if dashboard_url == "" then
+        dashboard_url = ui.input("Enter Dashboard URL (e.g. http://192.168.1.5:3000)")
+        if not dashboard_url or dashboard_url == "" then
+            ui.error("Dashboard URL is required to start the agent.")
+            return
+        end
+        -- Remove trailing slash
+        dashboard_url = dashboard_url:gsub("/$", "")
+        config.set(cfg_data, "agent.dashboard_url", dashboard_url)
+        config.save(cfg_data)
+    end
+    
+    local device_id = config.get(cfg_data, "agent.device_id", "")
+    if device_id == "" then
+        -- Generate a simple random device ID if not exists
+        math.randomseed(os.time())
+        device_id = "device_" .. tostring(math.random(10000, 99999))
+        config.set(cfg_data, "agent.device_id", device_id)
+        config.save(cfg_data)
+    end
+    
+    ui.header("Starhub Agent Running")
+    ui.info("Device ID: " .. ui.c(device_id, ui.color.cyan))
+    ui.info("Dashboard: " .. ui.c(dashboard_url, ui.color.cyan))
+    print("Press Ctrl+C to stop.\n")
+    
+    local last_status_time = 0
+    local STATUS_INTERVAL = 5 -- Send status every 5 seconds
+    
+    while true do
+        local current_time = os.time()
+        
+        -- 1. Report Status periodically
+        if current_time - last_status_time >= STATUS_INTERVAL then
+            agent.report_status(dashboard_url, device_id, cfg_data)
+            last_status_time = current_time
+        end
+        
+        -- 2. Poll for commands
+        local cmd = agent.poll(dashboard_url, device_id)
+        if cmd then
+            ui.info(string.format("[%s] Received command: %s", os.date("%H:%M:%S"), cmd.command))
+            
+            -- Execute via API
+            local result = api.execute(cmd.command, cmd.params, cfg_data)
+            
+            if result.ok then
+                ui.success("Command executed successfully")
+            else
+                ui.error("Command failed: " .. tostring(result.error))
+            end
+            
+            -- Send result back if it was a specific job
+            if cmd.job_id then
+                agent.report_result(dashboard_url, device_id, cmd.job_id, result)
+            end
+            
+            -- Force status update immediately after command
+            last_status_time = 0 
+        end
+        
+        -- Sleep briefly to avoid hammering the CPU (poll interval)
+        shell.sleep(2)
+    end
+end
+
+return agent
+
+end
+
+-- ============================================================
 -- MAIN ENTRY POINT
 -- ============================================================
 -- ============================================================
