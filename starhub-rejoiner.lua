@@ -2368,6 +2368,19 @@ function grid.get_screen_size()
     return nil, nil
 end
 
+--- Get screen density scale (1.0 for 160dpi, 2.0 for 320dpi, etc)
+---@return number scale
+function grid.get_density_scale()
+    local _, out = shell.su("wm density 2>/dev/null")
+    if out then
+        local density = out:match("density:%s*(%d+)")
+        if density then
+            return tonumber(density) / 160.0
+        end
+    end
+    return 2.0 -- Fallback for redfinger 720p is usually 320dpi
+end
+
 --- Apply grid layout to a list of packages
 ---@param cfg_data table
 ---@param packages table List of package names
@@ -2449,31 +2462,34 @@ function grid.apply(cfg_data, packages, rows, cols)
                 local prefs_file = shell.trim(ls_out)
                 
                 if prefs_file ~= "" and prefs_file:match("%.xml$") then
+                    local scale = grid.get_density_scale()
+                    local dp_left = math.floor(left / scale)
+                    local dp_top = math.floor(top / scale)
+                    local dp_right = math.floor(right / scale)
+                    local dp_bottom = math.floor(bottom / scale)
+
                     local keys = {
                         "app_cloner_current_window_left", "app_cloner_current_window_top", "app_cloner_current_window_right", "app_cloner_current_window_bottom",
-                        "app_cloner_original_window_left", "app_cloner_original_window_top", "app_cloner_original_window_right", "app_cloner_original_window_bottom",
-                        "floating_app_enabled"
+                        "app_cloner_original_window_left", "app_cloner_original_window_top", "app_cloner_original_window_right", "app_cloner_original_window_bottom"
                     }
                     local vals = {
-                        left, top, right, bottom,
-                        left, top, right, bottom,
-                        1 -- boolean true is usually stored differently or we can just hope the user already enabled it
+                        dp_left, dp_top, dp_right, dp_bottom,
+                        dp_left, dp_top, dp_right, dp_bottom
                     }
                     
-                    -- Remove old keys
+                    -- Remove old keys and </map>
                     for _, key in ipairs(keys) do
                         shell.su("sed -i '/<int name=\"" .. key .. "\"/d' " .. shell.quote(prefs_file))
-                        shell.su("sed -i '/<boolean name=\"" .. key .. "\"/d' " .. shell.quote(prefs_file))
                     end
+                    shell.su("sed -i '/<boolean name=\"floating_app_enabled\"/d' " .. shell.quote(prefs_file))
+                    shell.su("sed -i '/<\\/map>/d' " .. shell.quote(prefs_file))
                     
-                    -- Inject new values
-                    local insert_str = "<boolean name=\\\"floating_app_enabled\\\" value=\\\"true\\\" />\\n"
+                    -- Inject new values safely using echo append
+                    shell.su("echo '    <boolean name=\"floating_app_enabled\" value=\"true\" />' >> " .. shell.quote(prefs_file))
                     for i = 1, 8 do
-                        insert_str = insert_str .. string.format("    <int name=\\\"%s\\\" value=\\\"%d\\\" />\\n", keys[i], vals[i])
+                        shell.su("echo '    <int name=\"" .. keys[i] .. "\" value=\"" .. vals[i] .. "\" />' >> " .. shell.quote(prefs_file))
                     end
-                    insert_str = insert_str .. "</map>"
-                    
-                    shell.su("sed -i 's#</map>#" .. insert_str .. "#' " .. shell.quote(prefs_file))
+                    shell.su("echo '</map>' >> " .. shell.quote(prefs_file))
                 else
                     ui.warn("Preferences file not found for " .. pkg .. "! Pastikan aplikasi sudah pernah dibuka.")
                 end
