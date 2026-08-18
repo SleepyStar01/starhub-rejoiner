@@ -2387,7 +2387,8 @@ end
 ---@param rows number
 ---@param cols number
 ---@param is_small boolean|nil
-function grid.apply(cfg_data, packages, rows, cols, is_small)
+---@param is_landscape boolean|nil
+function grid.apply(cfg_data, packages, rows, cols, is_small, is_landscape)
     if #packages == 0 then
         ui.error("No packages to arrange")
         return
@@ -2401,6 +2402,18 @@ function grid.apply(cfg_data, packages, rows, cols, is_small)
     if not w or not h then
         ui.error("Could not determine screen resolution")
         return
+    end
+
+    if is_landscape and w < h then
+        -- Swap width and height for landscape mode
+        local temp = w
+        w = h
+        h = temp
+    elseif not is_landscape and w > h then
+        -- Force portrait if somehow device defaults to landscape
+        local temp = w
+        w = h
+        h = temp
     end
 
     local scale = grid.get_density_scale()
@@ -2593,15 +2606,25 @@ function grid.menu(cfg_data, packages)
         end
 
         local is_small = false
+        local is_landscape = false
+        
         if ask == "1" or ask == "2" then
             local size_ask = ui.menu({
                 { key = "1", label = "Fill Screen (Auto Calculate Height/Width)" },
                 { key = "2", label = "Small (Pebletz Fixed Size: 160x120 dp)" },
             }, "Window Size")
             is_small = (size_ask == "2")
+            
+            if not is_small then
+                local ori_ask = ui.menu({
+                    { key = "1", label = "Portrait (Tegak - Default 720x1280)" },
+                    { key = "2", label = "Landscape (Miring - 1280x720)" },
+                }, "Screen Orientation")
+                is_landscape = (ori_ask == "2")
+            end
         end
 
-        grid.apply(cfg_data, target_packages, rows, cols, is_small)
+        grid.apply(cfg_data, target_packages, rows, cols, is_small, is_landscape)
         shell.sleep(2)
     end
 end
