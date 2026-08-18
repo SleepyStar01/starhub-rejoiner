@@ -3940,7 +3940,7 @@ local agent = {}
 ---@return table|nil command
 function agent.poll(url, device_id)
     local endpoint = url .. "/api/poll?device_id=" .. device_id
-    local code, output = shell.su("curl -s -H 'Bypass-Tunnel-Reminder: true' --max-time 10 " .. shell.quote(endpoint))
+    local code, output = shell.exec("curl -s -H 'Bypass-Tunnel-Reminder: true' --max-time 10 " .. shell.quote(endpoint))
     
     if code == 0 and output and output ~= "" then
         local ok, data = pcall(json.decode, output)
@@ -3960,15 +3960,16 @@ function agent.report_status(url, device_id, cfg_data)
     status_data.device_id = device_id
     
     local payload = json.encode(status_data)
-    local temp_file = "/data/local/tmp/status_payload.json"
+    local temp_file = "agent_status.json"
     
-    -- Write payload to file to avoid curl command line length limits
-    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", temp_file, payload)
-    shell.su(echo_cmd)
-    
-    local endpoint = url .. "/api/status"
-    shell.su("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
-    shell.su("rm -f " .. temp_file)
+    local f = io.open(temp_file, "w")
+    if f then
+        f:write(payload)
+        f:close()
+        local endpoint = url .. "/api/status"
+        shell.exec("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+        os.remove(temp_file)
+    end
 end
 
 --- Send command result back to the dashboard
@@ -3983,13 +3984,15 @@ function agent.report_result(url, device_id, job_id, result)
         result = result
     })
     
-    local temp_file = "/data/local/tmp/result_payload.json"
-    local echo_cmd = string.format("cat << 'EOF' > %s\n%s\nEOF", temp_file, payload)
-    shell.su(echo_cmd)
-    
-    local endpoint = url .. "/api/result"
-    shell.su("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
-    shell.su("rm -f " .. temp_file)
+    local temp_file = "agent_result.json"
+    local f = io.open(temp_file, "w")
+    if f then
+        f:write(payload)
+        f:close()
+        local endpoint = url .. "/api/result"
+        shell.exec("curl -s -X POST -H 'Bypass-Tunnel-Reminder: true' -H 'Content-Type: application/json' -d @" .. temp_file .. " " .. shell.quote(endpoint))
+        os.remove(temp_file)
+    end
 end
 
 --- Start the polling loop
